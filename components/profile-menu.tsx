@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChevronDownIcon, FileTextIcon, LogOutIcon } from "lucide-react";
+import { ChevronDownIcon, LogOutIcon, UserIcon } from "lucide-react";
 import { signOutAction } from "@/app/actions/auth";
 import { Avatar } from "@/components/avatar";
 import {
@@ -42,26 +42,35 @@ export function ProfileMenu({
         }
       />
       <DropdownMenuContent align="end" className="w-64">
-        {/* Header block — read-only summary of who's signed in. */}
-        <div className="flex items-center gap-3 px-2 py-2">
-          <Avatar src={user.image} name={user.name} email={user.email} />
-          <div className="flex min-w-0 flex-col">
-            {user.name ? (
-              <span className="truncate text-sm font-medium">{user.name}</span>
-            ) : null}
-            <span className="truncate text-xs text-muted-foreground">
-              {user.email}
-            </span>
-          </div>
-        </div>
+        {/* Header block doubles as a Profile link — full-area click target. */}
+        <DropdownMenuItem
+          render={
+            <Link
+              href="/profile"
+              className="cursor-pointer items-center gap-3 px-2 py-2"
+            >
+              <Avatar src={user.image} name={user.name} email={user.email} />
+              <div className="flex min-w-0 flex-col">
+                {user.name ? (
+                  <span className="truncate text-sm font-medium">
+                    {user.name}
+                  </span>
+                ) : null}
+                <span className="truncate text-xs text-muted-foreground">
+                  {user.email}
+                </span>
+              </div>
+            </Link>
+          }
+        />
 
         <DropdownMenuSeparator />
 
         <DropdownMenuItem
           render={
             <Link href="/profile" className="cursor-pointer">
-              <FileTextIcon />
-              My resume
+              <UserIcon />
+              Profile
             </Link>
           }
         />

@@ -194,9 +194,13 @@ function DescriptionDisclosure({ text }: { text: string }) {
 
 function DetailField({ label, value }: { label: string; value: string | null }) {
   return (
-    <div>
+    // min-w-0 lets this grid cell shrink below its content's intrinsic
+    // width — without it, a long unbroken value would push out the grid
+    // track and force horizontal scroll. break-words is the corresponding
+    // permission to wrap long values inside.
+    <div className="min-w-0">
       <div className="text-muted-foreground">{label}</div>
-      <div className="mt-0.5">{value ?? <Dash />}</div>
+      <div className="mt-0.5 break-words">{value ?? <Dash />}</div>
     </div>
   );
 }
@@ -499,6 +503,11 @@ function FiltersSidebar({
 // Column definitions
 // ============================================================================
 
+// Column widths in pixels. The table uses `table-fixed` (see render below),
+// so these are enforced. Role gets no `size` — under table-fixed, the
+// unspecified column absorbs all remaining width, which means long role
+// titles get the most room.
+//
 // Status column has no `cell` defined here — JobRow intercepts it so the
 // dropdown reads the per-row optimistic state. The header still uses this
 // definition.
@@ -506,6 +515,7 @@ const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "company",
     header: "Company",
+    size: 130,
     // Sidebar company dropdown filters via exact-match.
     filterFn: "equalsString",
     cell: ({ getValue }) => (
@@ -515,10 +525,12 @@ const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "title",
     header: "Role",
+    // No size → flex column under table-fixed.
   },
   {
     accessorKey: "status",
     header: "Status",
+    size: 130,
     sortingFn: statusSortingFn,
     // The sidebar status dropdown triggers exact-match filtering on this id.
     filterFn: "equalsString",
@@ -528,6 +540,7 @@ const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "fitScore",
     header: "Match %",
+    size: 90,
     // nulls sort last so jobs without a fit score don't crowd the top.
     sortUndefined: "last",
     cell: ({ getValue }) => {
@@ -538,6 +551,7 @@ const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "coverLetter",
     header: "Cover Letter",
+    size: 110,
     enableSorting: false,
     cell: ({ getValue }) => {
       const v = getValue<string | null>();
@@ -571,6 +585,11 @@ const columns: ColumnDef<JobWithContacts>[] = [
   },
 ];
 
+// Long-content cells that need to wrap rather than truncate. The default
+// TableCell from components/ui/table.tsx ships with `whitespace-nowrap`;
+// this set tells the row renderer to override that for the role column.
+const WRAPPING_COLUMNS = new Set(["title"]);
+
 // ============================================================================
 // Per-row component
 // ============================================================================
@@ -603,24 +622,37 @@ function JobRow({
   return (
     <Fragment>
       <TableRow>
-        {cells.map((cell) =>
-          cell.column.id === "status" ? (
-            <TableCell key={cell.id}>
+        {cells.map((cell) => {
+          // align-top + whitespace-normal lets long role titles wrap into
+          // multiple lines instead of stretching the column.
+          const wraps = WRAPPING_COLUMNS.has(cell.column.id);
+          const className = wraps ? "whitespace-normal align-top" : undefined;
+          return cell.column.id === "status" ? (
+            <TableCell key={cell.id} className={className}>
               <StatusSelect
                 status={optimisticStatus}
                 onChange={handleStatusChange}
               />
             </TableCell>
           ) : (
-            <TableCell key={cell.id}>
+            <TableCell key={cell.id} className={className}>
               {flexRender(cell.column.columnDef.cell, cell.getContext())}
             </TableCell>
-          ),
-        )}
+          );
+        })}
       </TableRow>
       {row.getIsExpanded() ? (
         <TableRow>
-          <TableCell colSpan={cells.length} className="p-0">
+          {/*
+            whitespace-normal overrides the default TableCell's nowrap
+            so long content inside the expanded panel (URLs, descriptions,
+            notes, contact details) can wrap to the cell's width instead
+            of overflowing the table.
+          */}
+          <TableCell
+            colSpan={cells.length}
+            className="whitespace-normal p-0"
+          >
             <JobRowDetail
               job={job}
               status={optimisticStatus}
@@ -745,20 +777,34 @@ export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
           <SearchBar value={globalFilter} onChange={setGlobalFilter} />
 
           <div className="rounded-lg border">
-            <Table>
+            {/*
+              `table-fixed` makes columns honor their declared widths
+              instead of growing to fit content. Combined with per-column
+              `size` on the column defs (rendered into `style={{ width }}`
+              below), this keeps the table inside the viewport without
+              horizontal scroll. The Role column has no `size` so it
+              absorbs the remaining space.
+            */}
+            <Table className="table-fixed">
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (
                   <TableRow key={headerGroup.id}>
-                    {headerGroup.headers.map((header) => (
-                      <TableHead key={header.id}>
-                        {header.isPlaceholder
-                          ? null
-                          : flexRender(
-                              header.column.columnDef.header,
-                              header.getContext(),
-                            )}
-                      </TableHead>
-                    ))}
+                    {headerGroup.headers.map((header) => {
+                      const size = header.column.columnDef.size;
+                      return (
+                        <TableHead
+                          key={header.id}
+                          style={size ? { width: `${size}px` } : undefined}
+                        >
+                          {header.isPlaceholder
+                            ? null
+                            : flexRender(
+                                header.column.columnDef.header,
+                                header.getContext(),
+                              )}
+                        </TableHead>
+                      );
+                    })}
                   </TableRow>
                 ))}
               </TableHeader>

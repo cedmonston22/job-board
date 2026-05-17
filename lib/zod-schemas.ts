@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAJOR_OPTIONS } from "./major-keywords";
 
 // FormData values are always strings. Empty inputs come through as "" rather
 // than `undefined`, which would otherwise pass length checks. This helper
@@ -104,6 +105,93 @@ export const contactInputSchema = z.object({
 });
 
 export type ContactInput = z.infer<typeof contactInputSchema>;
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Scrapers
+// ---------------------------------------------------------------------------
+
+// Mirrors the Prisma `ScrapeSourceType` enum. Kept as a string-literal z.enum
+// (not z.nativeEnum on the Prisma type) so the schema doesn't drag the heavy
+// generated client into client-bundle imports.
+export const scrapeSourceTypeSchema = z.enum([
+  "GREENHOUSE",
+  "LEVER",
+  "ASHBY",
+  "REMOTEOK",
+  "SIMPLIFY_SUMMER",
+  "SIMPLIFY_NEWGRAD",
+  "OUCKAH_SUMMER",
+]);
+export type ScrapeSourceTypeInput = z.infer<typeof scrapeSourceTypeSchema>;
+
+// Which source types require an `identifier` (= the company slug). Global
+// feeds (RemoteOK, Simplify, Ouckah) have one canonical URL each, so we
+// ignore identifier for them.
+const ATS_SOURCE_TYPES = ["GREENHOUSE", "LEVER", "ASHBY"] as const;
+
+// Validates the "add a source" form. The `.superRefine` enforces: if the
+// type is ATS-based, identifier is required (and lowercased-normalized); if
+// it's global, identifier is forced to undefined so we don't accidentally
+// create two rows for "RemoteOK with identifier=stripe" and "RemoteOK with
+// identifier=null" (the unique constraint treats those as distinct).
+export const scrapeSourceInputSchema = z
+  .object({
+    type: scrapeSourceTypeSchema,
+    identifier: z.preprocess(
+      emptyToUndefined,
+      z.string().min(1).max(100).optional(),
+    ),
+    label: z.string().min(1, "Label is required").max(100, "Too long"),
+    enabled: z.preprocess(
+      // Checkboxes show up as "on" / undefined in FormData, not as booleans.
+      (val) => val === "on" || val === true,
+      z.boolean(),
+    ),
+  })
+  .superRefine((data, ctx) => {
+    const isAts = (ATS_SOURCE_TYPES as readonly string[]).includes(data.type);
+    if (isAts && !data.identifier) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["identifier"],
+        message: "Company slug is required for this source",
+      });
+    }
+  })
+  .transform((data) => {
+    const isAts = (ATS_SOURCE_TYPES as readonly string[]).includes(data.type);
+    return {
+      ...data,
+      // Force null for global feeds so the unique constraint behaves.
+      // Lowercase ATS slugs for consistency (Greenhouse/Lever/Ashby slugs
+      // are case-insensitive in their APIs).
+      identifier: isAts ? data.identifier!.toLowerCase() : null,
+    };
+  });
+
+export type ScrapeSourceInput = z.infer<typeof scrapeSourceInputSchema>;
+
+// Validates the filter-config form. Both fields are optional — an empty
+// filter row means "save every scraped job". The `roles` textarea is parsed
+// by splitting on commas/newlines, trimming, and dropping blanks.
+export const scrapeFilterInputSchema = z.object({
+  major: z.preprocess(
+    emptyToUndefined,
+    z.enum(MAJOR_OPTIONS as [string, ...string[]]).optional(),
+  ),
+  roles: z.preprocess(
+    (val) => {
+      if (typeof val !== "string") return [];
+      return val
+        .split(/[,\n]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    },
+    z.array(z.string().min(1).max(100)).max(50),
+  ),
+});
+
+export type ScrapeFilterInput = z.infer<typeof scrapeFilterInputSchema>;
 
 // Shape we expect Groq to return when parsing the extracted text of a resume.
 // Used both to validate the LLM response AND as the source of truth for the

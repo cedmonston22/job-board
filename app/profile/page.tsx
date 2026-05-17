@@ -8,8 +8,6 @@ import { Header } from "@/components/header";
 import { ResumeSection } from "@/components/resume/resume-section";
 
 // /profile — the user's account + resume page.
-// 2.1 just sets up the routing and a section placeholder. Step 2.2 will
-// add the upload UI, 2.3 wires text extraction, 2.4 renders the parsed preview.
 export default async function ProfilePage() {
   const session = await auth();
   if (!session?.user?.id) redirect("/login");

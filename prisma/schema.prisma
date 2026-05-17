@@ -21,10 +21,12 @@ model User {
   emailVerified DateTime?
   image         String?
 
-  accounts Account[]
-  sessions Session[]
-  jobs     Job[]
-  resume   Resume?
+  accounts        Account[]
+  sessions        Session[]
+  jobs            Job[]
+  resume          Resume?
+  scrapeFilter    ScrapeFilter?
+  discoveredJobs  DiscoveredJob[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -167,4 +169,72 @@ model Contact {
   updatedAt DateTime @updatedAt
 
   @@index([jobId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Scrapers
+// ---------------------------------------------------------------------------
+
+// Which job-board APIs/feeds we know how to scrape. The set of enabled
+// sources lives in code (lib/scrapers/default-sources.ts) — no per-user
+// config UI. The scraper runner switches on this value to pick the adapter.
+enum ScrapeSourceType {
+  GREENHOUSE        // boards-api.greenhouse.io/v1/boards/{slug}/jobs
+  LEVER             // api.lever.co/v0/postings/{slug}
+  ASHBY             // api.ashbyhq.com/posting-api/job-board/{slug}
+  REMOTEOK          // remoteok.com/api (global firehose; identifier ignored)
+  SIMPLIFY_SUMMER   // github.com/SimplifyJobs/Summer2026-Internships README.md
+  SIMPLIFY_NEWGRAD  // github.com/SimplifyJobs/New-Grad-Positions README.md
+  OUCKAH_SUMMER     // github.com/Ouckah/Summer2026-Internships README.md
+}
+
+// One row per user. Applied at scrape time to drop irrelevant titles before
+// they ever hit the database. Empty config = save everything.
+//
+// Filter precedence (see lib/scrapers/filter.ts):
+//   1. If `roles` is non-empty → keep jobs whose title contains any role
+//   2. Else if `major` is set → look up keywords from MAJOR_KEYWORDS
+//   3. Else → keep everything
+model ScrapeFilter {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  major String?  // dropdown value, e.g. "Computer Science"; null = no umbrella
+  roles String[] // specific titles override, e.g. ["data engineer", "ml engineer"]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// The scraper output pool. Separate from `Job` so the user can browse and
+// triage discovered postings without polluting their tracked list. Clicking
+// "Import" copies the row into Job with status=SAVED and stamps
+// `importedJobId` here so the search tab can hide it.
+model DiscoveredJob {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  source   ScrapeSourceType
+  sourceId String           // external id, or hash of URL for repo sources
+
+  title       String
+  company     String
+  location    String?  // displayed as a column on the search tab
+  url         String
+  description String?  // some adapters provide, others don't
+  postedAt    DateTime?
+
+  discoveredAt DateTime @default(now())
+
+  // User actions on a discovered job. importedJobId links to the new Job row
+  // created by "Import"; dismissedAt is set by "Not interested".
+  importedJobId String?
+  dismissedAt   DateTime?
+
+  // Scrapers re-run daily — the unique constraint makes upsert idempotent.
+  @@unique([userId, source, sourceId])
+  // Fast lookup for "show me undismissed, unimported leads".
+  @@index([userId, dismissedAt, importedJobId])
 }
