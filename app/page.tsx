@@ -1,54 +1,64 @@
-import Link from "next/link";
+import { redirect } from "next/navigation";
 import { auth, signOut } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { Button } from "@/components/ui/button";
+import { AddJobSheet } from "@/components/jobs/add-job-sheet";
+import { JobsTable } from "@/components/jobs/jobs-table";
 
 async function handleSignOut() {
   "use server";
-  await signOut({ redirectTo: "/" });
+  await signOut({ redirectTo: "/login" });
 }
 
 export default async function Home() {
-  // auth() reads the session cookie and looks up the matching Session row in
-  // the database. Returns null if not signed in. Because this is a server
-  // component, the lookup happens server-side — the browser never sees the
-  // raw query.
+  // Auth gate: every code path below assumes a logged-in user.
   const session = await auth();
+  if (!session?.user?.id) redirect("/login");
+
+  // Server-side fetch of this user's jobs. Server components can await Prisma
+  // queries directly — no API endpoint, no fetch, no useEffect.
+  const jobs = await prisma.job.findMany({
+    where: { userId: session.user.id },
+    orderBy: { updatedAt: "desc" },
+  });
 
   return (
-    <main className="flex flex-1 flex-col items-center justify-center px-6 py-24">
-      <div className="w-full max-w-md text-center">
-        <h1 className="text-3xl font-semibold tracking-tight">Job Board</h1>
-        <p className="mt-3 text-zinc-600 dark:text-zinc-400">
-          Your personal job tracking dashboard.
-        </p>
+    <div className="flex flex-1 flex-col">
+      <header className="flex items-center justify-between border-b px-6 py-3">
+        <h1 className="text-lg font-semibold">Job Board</h1>
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-muted-foreground">{session.user.email}</span>
+          <form action={handleSignOut}>
+            <Button type="submit" variant="outline" size="sm">
+              Sign out
+            </Button>
+          </form>
+        </div>
+      </header>
 
-        {session?.user ? (
-          <div className="mt-10 space-y-4">
-            <p className="text-sm text-zinc-700 dark:text-zinc-300">
-              Signed in as{" "}
-              <span className="font-medium">
-                {session.user.email ?? session.user.name}
-              </span>
-            </p>
-            <form action={handleSignOut}>
-              <button
-                type="submit"
-                className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-              >
-                Sign out
-              </button>
-            </form>
-          </div>
-        ) : (
-          <div className="mt-10">
-            <Link
-              href="/login"
-              className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
-            >
-              Sign in
-            </Link>
-          </div>
-        )}
-      </div>
-    </main>
+      <main className="flex-1 p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-medium">
+            Your jobs{" "}
+            <span className="text-muted-foreground">({jobs.length})</span>
+          </h2>
+          <AddJobSheet />
+        </div>
+
+        {jobs.length === 0 ? <EmptyState /> : <JobsTable jobs={jobs} />}
+      </main>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="rounded-lg border border-dashed py-16 text-center">
+      <p className="text-sm text-muted-foreground">
+        No jobs yet. Click{" "}
+        <span className="font-medium text-foreground">Add job</span> to start
+        tracking.
+      </p>
+    </div>
   );
 }

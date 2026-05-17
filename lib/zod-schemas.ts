@@ -68,3 +68,20 @@ export const jobInputSchema = z
   );
 
 export type JobInput = z.infer<typeof jobInputSchema>;
+
+// Shape we expect Groq to return when parsing a job-posting URL. All fields are
+// nullable: the model is instructed to return `null` when a value is not
+// explicitly stated on the page (rather than guessing). After parsing we hand
+// these values to the AddJobSheet to prefill the form, so the user sees and
+// can correct anything before saving.
+export const parsedJobSchema = z.object({
+  title: z.string().min(1).max(200).nullable(),
+  company: z.string().min(1).max(100).nullable(),
+  location: z.string().max(100).nullable(),
+  remoteType: z.enum(["remote", "hybrid", "onsite"]).nullable(),
+  salaryMin: z.number().int().nonnegative().nullable(),
+  salaryMax: z.number().int().nonnegative().nullable(),
+  description: z.string().max(20000).nullable(),
+});
+
+export type ParsedJob = z.infer<typeof parsedJobSchema>;

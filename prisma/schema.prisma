@@ -95,9 +95,10 @@ model Job {
   url         String?
 
   // User tracking (what you think about it)
-  status    JobStatus @default(SAVED)
-  appliedAt DateTime? // set when status flips to APPLIED
-  notes     String? // your private notes
+  status     JobStatus @default(SAVED)
+  appliedAt  DateTime? // set when status flips to APPLIED
+  rejectedAt DateTime? // set when status flips to REJECTED
+  notes      String? // your private notes
 
   // Filled by scrapers in Phase 3 (null for manually-added jobs)
   source   String? // e.g. "greenhouse", "lever", "manual"
@@ -107,6 +108,9 @@ model Job {
   // Filled by AI in Phase 4
   fitScore     Int? // 0..100
   fitReasoning String?
+
+  // Filled by AI in Phase 5 (cover-letter generation)
+  coverLetter String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
