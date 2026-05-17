@@ -108,9 +108,15 @@ model Job {
   sourceId String? // external ID at the source
   postedAt DateTime?
 
-  // Filled by AI in Phase 4
+  // Filled by AI in Phase 4. Score runs in the background via `after()` once a
+  // Job is created (manual add or imported from /jobs/search) — see
+  // `lib/fit-scorer.ts`. All four fields are populated atomically: either all
+  // are set (success) or all stay null (no resume / Groq failed).
   fitScore     Int? // 0..100
-  fitReasoning String?
+  fitSummary   String? // ~1 sentence, shown as a tooltip on the table cell
+  fitStrengths String[] // resume points that match the JD
+  fitGaps      String[] // resume gaps relative to the JD
+  fitScoredAt  DateTime? // last successful score; null if never scored
 
   // Filled by AI in Phase 5 (cover-letter generation)
   coverLetter String?

@@ -64,6 +64,31 @@ function Dash() {
   return <span className="text-muted-foreground">—</span>;
 }
 
+// Color-coded badge for the Match % column. The bands match the score bands
+// the LLM prompt is anchored to (lib/fit-scorer.ts):
+//   ≥80 → green  (strong match: 70-89 + 90-100 in the prompt's bands)
+//   50-79 → amber (decent match)
+//    <50 → red   (weak / poor)
+// `title` is the native browser tooltip on hover — shows the one-sentence
+// summary if we have one. Quick & dep-free for now; a real Tooltip primitive
+// can drop in later.
+function FitBadge({ score, summary }: { score: number; summary: string | null }) {
+  const tone =
+    score >= 80
+      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+      : score >= 50
+        ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+        : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300";
+  return (
+    <span
+      title={summary ?? undefined}
+      className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${tone}`}
+    >
+      {score}
+    </span>
+  );
+}
+
 // Stateless status dropdown — the optimistic state lives on JobRow so the
 // expanded detail panel can read the same value. This component just renders.
 function StatusSelect({
@@ -539,13 +564,14 @@ const columns: ColumnDef<JobWithContacts>[] = [
   },
   {
     accessorKey: "fitScore",
-    header: "Match %",
+    header: "Match",
     size: 90,
     // nulls sort last so jobs without a fit score don't crowd the top.
     sortUndefined: "last",
-    cell: ({ getValue }) => {
+    cell: ({ row, getValue }) => {
       const v = getValue<number | null>();
-      return v == null ? <Dash /> : <span>{v}%</span>;
+      if (v == null) return <Dash />;
+      return <FitBadge score={v} summary={row.original.fitSummary} />;
     },
   },
   {

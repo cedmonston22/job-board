@@ -244,3 +244,19 @@ export const parsedResumeSchema = z.object({
 });
 
 export type ParsedResume = z.infer<typeof parsedResumeSchema>;
+
+// Shape we expect Groq to return when scoring a resume against a job. Used to
+// double-validate the LLM response in `lib/fit-scorer.ts`. Hard limits on
+// array lengths and string lengths so a runaway response can't bloat the DB.
+//
+// - score: 0–100 integer (clamped server-side as a safety net)
+// - summary: a single short sentence, shown as a tooltip on the table cell
+// - strengths/gaps: 3–6 bullets each in practice; we cap at 8 to be safe
+export const fitResultSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  summary: z.string().min(1).max(500),
+  strengths: z.array(z.string().min(1).max(300)).max(8),
+  gaps: z.array(z.string().min(1).max(300)).max(8),
+});
+
+export type FitResult = z.infer<typeof fitResultSchema>;

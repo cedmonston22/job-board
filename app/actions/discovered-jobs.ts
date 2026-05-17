@@ -2,8 +2,10 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { scoreJobAndStore } from "@/lib/score-job";
 import { scrapeFilterInputSchema } from "@/lib/zod-schemas";
 
 // Same envelope used by every other mutation in the project — keeps the
@@ -96,6 +98,7 @@ export async function importDiscoveredJob(
   });
 
   let jobId: string;
+  let isFreshJob = false;
   if (existing) {
     jobId = existing.id;
   } else {
@@ -115,6 +118,7 @@ export async function importDiscoveredJob(
       select: { id: true },
     });
     jobId = created.id;
+    isFreshJob = true;
   }
 
   // updateMany with userId in the where clause — same ownership pattern
@@ -128,6 +132,14 @@ export async function importDiscoveredJob(
   // gains a new Job.
   revalidatePath("/jobs/search");
   revalidatePath("/");
+
+  // Auto-score the fresh Job in the background. We don't score reused-
+  // existing Jobs — that path only happens when a previous import was
+  // un-stamped (rare); the user can hit Re-score manually if they want.
+  if (isFreshJob) {
+    after(() => scoreJobAndStore(userId, jobId));
+  }
+
   return { ok: true, jobId };
 }
 

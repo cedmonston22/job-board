@@ -2,11 +2,13 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { z } from "zod";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { groq, GROQ_MODEL } from "@/lib/groq";
 import { extractFromJsonLd } from "@/lib/job-parsers";
+import { scoreJobAndStore } from "@/lib/score-job";
 import {
   jobInputSchema,
   jobStatusSchema,
@@ -50,7 +52,7 @@ export async function createJob(
     };
   }
 
-  await prisma.job.create({
+  const created = await prisma.job.create({
     data: {
       ...parsed.data,
       userId,
@@ -58,10 +60,18 @@ export async function createJob(
       // "applied 3 days ago" in the table later.
       appliedAt: parsed.data.status === "APPLIED" ? new Date() : null,
     },
+    select: { id: true },
   });
 
   // Tell Next.js the cached homepage data is stale so the new job shows up.
   revalidatePath("/");
+
+  // Kick off AI fit scoring AFTER the response has been sent — see Next.js
+  // `after()` docs. The Save button feels instant to the user; the fit
+  // score lands a few seconds later and shows up on the dashboard's next
+  // refresh (the helper calls revalidatePath itself when it's done).
+  after(() => scoreJobAndStore(userId, created.id));
+
   return { ok: true };
 }
 
