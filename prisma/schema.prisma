@@ -1,9 +1,5 @@
 // Prisma schema for the job-board project.
 // See https://pris.ly/d/prisma-schema for syntax docs.
-//
-// The models below cover everything Auth.js (NextAuth) v5 requires for its
-// Prisma adapter when using database sessions. We'll add domain models
-// (Resume, Job, Application, etc.) in later phases.
 
 generator client {
   provider = "prisma-client"
@@ -27,6 +23,7 @@ model User {
 
   accounts Account[]
   sessions Session[]
+  jobs     Job[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -70,4 +67,54 @@ model VerificationToken {
   expires    DateTime
 
   @@id([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Domain — Jobs you're tracking
+// ---------------------------------------------------------------------------
+
+enum JobStatus {
+  SAVED
+  APPLIED
+  REJECTED
+}
+
+model Job {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Job content (what the role is)
+  title       String
+  company     String
+  location    String?
+  remoteType  String? // "remote" | "hybrid" | "onsite" — free-form for now
+  salaryMin   Int? // both null = "salary not listed"
+  salaryMax   Int?
+  description String? // from the job posting
+  url         String?
+
+  // User tracking (what you think about it)
+  status    JobStatus @default(SAVED)
+  appliedAt DateTime? // set when status flips to APPLIED
+  notes     String? // your private notes
+
+  // Filled by scrapers in Phase 3 (null for manually-added jobs)
+  source   String? // e.g. "greenhouse", "lever", "manual"
+  sourceId String? // external ID at the source
+  postedAt DateTime?
+
+  // Filled by AI in Phase 4
+  fitScore     Int? // 0..100
+  fitReasoning String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Prevents the scraper from creating duplicate rows for the same posting.
+  // Postgres treats NULLs as distinct, so multiple manual entries with
+  // source = null are still allowed.
+  @@unique([userId, source, sourceId])
+  // Fast lookup for "all of my SAVED jobs" / "all of my APPLIED jobs".
+  @@index([userId, status])
 }
