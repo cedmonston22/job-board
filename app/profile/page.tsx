@@ -1,17 +1,14 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { ArrowLeftIcon } from "lucide-react";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { requireOnboarded } from "@/lib/require-onboarded";
 import { Avatar } from "@/components/avatar";
 import { Header } from "@/components/header";
 import { ResumeSection } from "@/components/resume/resume-section";
 
 // /profile — the user's account + resume page.
 export default async function ProfilePage() {
-  const session = await auth();
-  if (!session?.user?.id) redirect("/login");
-
+  const session = await requireOnboarded();
   const user = session.user;
 
   // Look up the user's resume (one per user). Will be null until they upload

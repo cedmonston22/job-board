@@ -1,6 +1,5 @@
-import { redirect } from "next/navigation";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { requireOnboarded } from "@/lib/require-onboarded";
 import { MAJOR_KEYWORDS, type Major } from "@/lib/major-keywords";
 import { getStaleCutoff } from "@/lib/scrapers/cleanup";
 import { Header } from "@/components/header";
@@ -30,9 +29,7 @@ export default async function JobSearchPage({
 }: {
   searchParams: Promise<{ page?: string; q?: string; sort?: string }>;
 }) {
-  const session = await auth();
-  if (!session?.user?.id) redirect("/login");
-
+  const session = await requireOnboarded();
   const user = session.user;
 
   // Parse URL params with safe defaults. NaN/<1 → page 1.

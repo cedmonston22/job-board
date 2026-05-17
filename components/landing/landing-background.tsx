@@ -3,24 +3,27 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { COMPANY_LOGOS } from "@/components/landing/company-logos";
 
-// Two non-overlapping horizontal bands — upper drifts left→right, lower
-// drifts right→left. Because the bands don't share vertical space, an
-// instance in the upper band can never collide with one in the lower band.
-const BANDS = [
-  { top: 3, height: 36, direction: "lr" as const },
-  { top: 61, height: 36, direction: "rl" as const },
-];
+// Ten horizontal lanes, alternating direction (lane 0 →, lane 1 ←, …).
+// Lanes are split across an upper band (lanes 0–4) and a lower band
+// (lanes 5–9); the gap between them is reserved for the sign-in card.
+const LANE_COUNT = 10;
 
-// Lanes per band. Each band holds exactly LANES_PER_BAND instances, with each
-// instance at a unique lane AND a unique evenly-spaced phase along the
-// animation loop. That combination guarantees no two instances in the same
-// band can occupy the same (x, y) at the same time.
-const LANES_PER_BAND = 10;
+// Per-lane vertical positions (top %). Hand-picked rather than computed so
+// the band geometry is easy to read and tweak. Upper band sits in 3–31%,
+// lower band in 65–97% — the 31–65% middle is left clear for the card.
+const LANE_TOPS = [3, 10, 17, 24, 31, 65, 72, 79, 86, 93];
 
-// Single shared duration. Variable durations would cause phase drift between
-// instances and re-introduce occasional clumping. Fixed duration is the only
-// way to keep the cross-instance phase spacing exactly constant forever.
-const DURATION_SEC = 45;
+// Each lane carries two logo instances at evenly-spaced phases (0 and
+// duration/2), so within a lane the two logos sit half a screen apart at
+// any moment and can never collide. Total instances = 20.
+const PER_LANE = 2;
+
+// Per-lane animation duration range. Each lane rolls its own random value
+// in this range, so different lanes drift at noticeably different speeds.
+// Logos inside the same lane share the lane's duration (variable durations
+// within a lane would let the two logos slowly drift into each other).
+const MIN_DURATION = 30;
+const MAX_DURATION = 65;
 
 type Instance = {
   key: number;
@@ -44,44 +47,49 @@ function shuffle<T>(arr: T[]): T[] {
 
 function buildInstances(): Instance[] {
   const brandCount = COMPANY_LOGOS.length;
+  const totalSlots = LANE_COUNT * PER_LANE; // 20
+
+  // Build the brand assignment pool: each brand appears as evenly as
+  // possible. With 8 brands and 20 slots, every brand appears at least
+  // twice (16) and 4 brands picked at random appear a third time. The
+  // final shuffle distributes them across lanes without a predictable
+  // order.
+  const fullCycles = Math.floor(totalSlots / brandCount); // 2
+  const extras = totalSlots - fullCycles * brandCount; // 4
+  const pool: number[] = [];
+  for (let c = 0; c < fullCycles; c++) {
+    pool.push(...Array.from({ length: brandCount }, (_, n) => n));
+  }
+  pool.push(
+    ...shuffle(Array.from({ length: brandCount }, (_, n) => n)).slice(
+      0,
+      extras,
+    ),
+  );
+  const brandSlots = shuffle(pool);
+
   const instances: Instance[] = [];
-  let key = 0;
+  let slotIdx = 0;
 
-  for (const band of BANDS) {
-    // Every brand appears at least once per band. When LANES_PER_BAND >
-    // brandCount, fill the remaining slots with a random subset of brands
-    // (no brand picked twice as an "extra"), then shuffle the full lane
-    // assignment so the two rows aren't mirrors of each other.
-    const base = shuffle(Array.from({ length: brandCount }, (_, n) => n));
-    const extras = shuffle(
-      Array.from({ length: brandCount }, (_, n) => n),
-    ).slice(0, Math.max(0, LANES_PER_BAND - brandCount));
-    const brandOrder = shuffle([...base, ...extras]);
+  for (let lane = 0; lane < LANE_COUNT; lane++) {
+    const duration = MIN_DURATION + Math.random() * (MAX_DURATION - MIN_DURATION);
+    const direction: "lr" | "rl" = lane % 2 === 0 ? "lr" : "rl";
+    const topPct = LANE_TOPS[lane] + (Math.random() - 0.5) * 0.8;
 
-    for (let lane = 0; lane < LANES_PER_BAND; lane++) {
-      // Evenly-spaced vertical lane within the band. Tiny jitter so the
-      // layout doesn't look ruler-perfect, kept small enough to never
-      // close the gap to the neighboring lane.
-      const topPct =
-        band.top +
-        (lane / (LANES_PER_BAND - 1)) * band.height +
-        (Math.random() - 0.5) * 1.2;
-
-      // Evenly-spaced phase along the animation loop. With 8 lanes and a
-      // 45s cycle, each instance starts 5.625s ahead of the next — at any
-      // frame they're at 8 distinct x positions across the viewport.
-      const phase = (lane / LANES_PER_BAND) * DURATION_SEC;
+    for (let p = 0; p < PER_LANE; p++) {
+      // Phases 0 and duration/2 → the two logos on a lane are always
+      // half a screen apart, so they never overlap one another.
+      const phase = (p / PER_LANE) * duration;
 
       instances.push({
-        key: key++,
-        logoIndex: brandOrder[lane],
+        key: instances.length,
+        logoIndex: brandSlots[slotIdx++],
         topPct,
-        size: 24 + Math.floor(Math.random() * 6), // 24–29 px (tighter so
-        // even the widest wordmark fits inside one phase slot at desktop)
-        duration: DURATION_SEC,
+        size: 24 + Math.floor(Math.random() * 6),
+        duration,
         delay: -phase,
         opacity: 0.3 + Math.random() * 0.12,
-        direction: band.direction,
+        direction,
       });
     }
   }

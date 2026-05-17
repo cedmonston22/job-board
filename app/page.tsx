@@ -1,14 +1,13 @@
-import { redirect } from "next/navigation";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { requireOnboarded } from "@/lib/require-onboarded";
 import { Header } from "@/components/header";
 import { AddJobButton } from "@/components/jobs/job-sheet";
 import { JobsTable } from "@/components/jobs/jobs-table";
 
 export default async function Home() {
-  // Auth gate: every code path below assumes a logged-in user.
-  const session = await auth();
-  if (!session?.user?.id) redirect("/login");
+  // Auth + onboarding gate. Redirects to /login if signed out, or to
+  // /onboarding if signed in but hasn't been through the welcome step.
+  const session = await requireOnboarded();
 
   // Server-side fetch of this user's jobs. Server components can await Prisma
   // queries directly — no API endpoint, no fetch, no useEffect.

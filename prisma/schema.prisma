@@ -28,6 +28,11 @@ model User {
   scrapeFilter    ScrapeFilter?
   discoveredJobs  DiscoveredJob[]
 
+  // Set the first time the user finishes (or skips) onboarding. Null = the
+  // user has signed in but hasn't been through the welcome/resume-upload step
+  // yet. Used by `lib/require-onboarded.ts` to gate every authed page.
+  onboardedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

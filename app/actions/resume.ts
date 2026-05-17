@@ -158,6 +158,14 @@ export async function uploadResume(
     }
   }
 
+  // First successful upload also finishes onboarding. updateMany with a
+  // `where` guard means we only stamp onboardedAt the first time — repeat
+  // uploads after onboarding don't overwrite the original timestamp.
+  await prisma.user.updateMany({
+    where: { id: userId, onboardedAt: null },
+    data: { onboardedAt: new Date() },
+  });
+
   revalidatePath("/profile");
   return {
     ok: true,
