@@ -1,57 +1,125 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
+import { MAJOR_KEYWORDS, type Major } from "@/lib/major-keywords";
 import { getStaleCutoff } from "@/lib/scrapers/cleanup";
-import { applyFilter } from "@/lib/scrapers/filter";
 import { Header } from "@/components/header";
 import { SearchView } from "@/components/search/search-view";
+import type { Prisma } from "@/lib/generated/prisma/client";
 
 // /jobs/search — the scraped-leads tab.
-// Server component: auth-gates, fetches the user's ScrapeFilter + active
-// DiscoveredJob rows, applies the filter at read time, hands the slimmed
-// list to the client table.
 //
-// Why filter at READ time even though the runner already filters at
-// scrape time? Because the user can change their filter on this page,
-// and we don't want every save to trigger a multi-minute re-scrape. The
-// scrape-time filter keeps the DB small; the read-time filter is the
-// fast knob the user actually controls.
-export default async function JobSearchPage() {
+// Server-side paginated. URL params drive everything:
+//   ?page=N      page index (1-based, default 1)
+//   ?q=...       global search across title/company/location
+//   ?sort=...    "newest" (default) or "oldest" — orders by postedAt
+//
+// Saved filter (Major + Role) lives on the user's ScrapeFilter row and
+// is applied at the DB level — keywords are pushed into the Prisma where
+// clause so pagination counts are accurate.
+//
+// Why server pagination: the unfiltered dataset is 3-5K rows × ~2 KB each.
+// Fetching all on every navigation made the page sluggish; now we fetch
+// at most PAGE_SIZE rows per render, never including the description
+// column (the table doesn't display it).
+
+const PAGE_SIZE = 50;
+
+export default async function JobSearchPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; q?: string; sort?: string }>;
+}) {
   const session = await auth();
   if (!session?.user?.id) redirect("/login");
 
   const user = session.user;
 
-  // Freshness window: never show a job posted >6 months ago. Same threshold
-  // used by deleteStaleDiscoveredJobs at scrape time — applying it here
-  // too means the user never sees stale rows even if the cleanup hasn't
-  // run yet (e.g. they haven't re-triggered a scrape today). For jobs
-  // where postedAt is null (Simplify/vansh markdown rows sometimes lack a
-  // parseable date), we trust the existing scrape-time cleanup, which
-  // uses discoveredAt as a fallback.
+  // Parse URL params with safe defaults. NaN/<1 → page 1.
+  const params = await searchParams;
+  const pageNum = Math.max(1, parseInt(params.page ?? "1", 10) || 1);
+  const q = params.q?.trim() ?? "";
+  const sort: "newest" | "oldest" =
+    params.sort === "oldest" ? "oldest" : "newest";
+
+  // Load the user's saved filter first — we need its major/roles to build
+  // the where clause for the leads query.
+  const filter = await prisma.scrapeFilter.findUnique({
+    where: { userId: user.id },
+  });
+
+  // Translate the filter into a keyword list. Same precedence as the
+  // in-memory applyFilter (which still exists for the scrape runner):
+  // roles override the major umbrella.
+  const keywords: readonly string[] =
+    filter && filter.roles.length > 0
+      ? filter.roles
+      : filter?.major
+        ? (MAJOR_KEYWORDS[filter.major as Major] ?? [])
+        : [];
+
   const cutoff = getStaleCutoff();
 
-  // Three parallel queries:
-  //   1. The user's filter row (one or null)
-  //   2. Active leads (not dismissed, within freshness window)
-  //   3. ALL of the user's existing Jobs with source+sourceId set — used
-  //      to mark leads as "already in your jobs" even when importedJobId
-  //      isn't set on the lead (e.g. they imported it from a different
-  //      DiscoveredJob row, or the Job pre-dates this lead, etc.)
-  const [filter, leads, existingJobs] = await Promise.all([
-    prisma.scrapeFilter.findUnique({ where: { userId: user.id } }),
+  // Build the where clause. AND-combines three independent OR groups so
+  // they don't trample each other. Using a typed `Prisma.DiscoveredJobWhereInput`
+  // catches mistakes early.
+  const andClauses: Prisma.DiscoveredJobWhereInput[] = [
+    // 6-month freshness: postedAt null or recent.
+    { OR: [{ postedAt: null }, { postedAt: { gte: cutoff } }] },
+  ];
+
+  if (keywords.length > 0) {
+    // Title must contain ANY keyword (case-insensitive substring).
+    andClauses.push({
+      OR: keywords.map((k) => ({
+        title: { contains: k, mode: "insensitive" as const },
+      })),
+    });
+  }
+
+  if (q) {
+    // Global search box — match title OR company OR location.
+    andClauses.push({
+      OR: [
+        { title: { contains: q, mode: "insensitive" as const } },
+        { company: { contains: q, mode: "insensitive" as const } },
+        { location: { contains: q, mode: "insensitive" as const } },
+      ],
+    });
+  }
+
+  const where: Prisma.DiscoveredJobWhereInput = {
+    userId: user.id,
+    dismissedAt: null,
+    AND: andClauses,
+  };
+
+  // Parallel: total count for pagination UI + the actual page slice +
+  // the user's existing Jobs (for the "In Your Jobs" badge match).
+  const [total, leads, existingJobs] = await Promise.all([
+    prisma.discoveredJob.count({ where }),
     prisma.discoveredJob.findMany({
-      where: {
-        userId: user.id,
-        // Hide dismissed leads. Imported leads stay visible — the row
-        // shows an "In your jobs" badge so you can see what you've
-        // already added without losing context.
-        dismissedAt: null,
-        // 6-month freshness gate.
-        OR: [{ postedAt: null }, { postedAt: { gte: cutoff } }],
+      where,
+      orderBy: { postedAt: sort === "newest" ? "desc" : "asc" },
+      take: PAGE_SIZE,
+      skip: (pageNum - 1) * PAGE_SIZE,
+      // Explicit select to OMIT description — saves ~80% of payload
+      // since the table never renders it. If we ever surface description
+      // inline, fetch it lazily via a per-row server action.
+      select: {
+        id: true,
+        userId: true,
+        source: true,
+        sourceId: true,
+        title: true,
+        company: true,
+        location: true,
+        url: true,
+        postedAt: true,
+        discoveredAt: true,
+        importedJobId: true,
+        dismissedAt: true,
       },
-      // Newest first; the table can re-sort client-side via column headers.
-      orderBy: { discoveredAt: "desc" },
     }),
     prisma.job.findMany({
       where: {
@@ -63,19 +131,11 @@ export default async function JobSearchPage() {
     }),
   ]);
 
-  // Build a lookup set of "source:sourceId" keys the user already tracks.
-  // Used below to mark each lead's inMyJobs flag.
+  // Build "In Your Jobs" lookup — see component for the two-trigger rule.
   const existingJobKeys = new Set(
     existingJobs.map((j) => `${j.source}:${j.sourceId}`),
   );
 
-  // Annotate each lead with whether it's already in My Jobs. Two sources
-  // of truth here, ORed together:
-  //   - importedJobId set on the lead (the user clicked Import on this
-  //     specific DiscoveredJob row)
-  //   - A Job exists matching this lead's source+sourceId (covers any
-  //     other path the job got into My Jobs, e.g. manually imported via
-  //     a different lead row that has since been deleted)
   const annotated = leads.map((lead) => ({
     ...lead,
     inMyJobs:
@@ -83,9 +143,7 @@ export default async function JobSearchPage() {
       existingJobKeys.has(`${lead.source}:${lead.sourceId}`),
   }));
 
-  // applyFilter is the SAME function used by the scrape runner — generic
-  // over anything with a `title` field. The annotated leads satisfy that.
-  const filtered = applyFilter(annotated, filter);
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <div className="flex flex-1 flex-col">
@@ -96,20 +154,24 @@ export default async function JobSearchPage() {
           <div>
             <h1 className="text-base font-medium">
               Job Search{" "}
-              <span className="text-muted-foreground">({filtered.length})</span>
+              <span className="text-muted-foreground">({total})</span>
             </h1>
             <p className="text-xs text-muted-foreground">
-              Daily-scraped openings across {/* informal source count */}
-              Greenhouse, Lever, Ashby, RemoteOK, and the Simplify / vansh
-              internship lists.
+              Daily-scraped openings across Greenhouse, Lever, Ashby,
+              RemoteOK, and the Simplify / vansh internship lists.
             </p>
           </div>
         </div>
 
         <SearchView
           filter={filter}
-          leads={filtered}
-          totalLeads={leads.length}
+          leads={annotated}
+          total={total}
+          page={pageNum}
+          pageCount={pageCount}
+          pageSize={PAGE_SIZE}
+          q={q}
+          sort={sort}
         />
       </main>
     </div>

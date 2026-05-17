@@ -94,7 +94,7 @@ export function SearchFilterSidebar({
         </div>
 
         <div className="grid gap-1.5">
-          <Label htmlFor="filter-roles">Role</Label>
+          <Label htmlFor="filter-roles">Role (optional)</Label>
           <Textarea
             id="filter-roles"
             name="roles"

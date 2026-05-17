@@ -1,14 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import {
   type ColumnDef,
-  type SortingState,
   flexRender,
   getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import {
@@ -29,14 +25,6 @@ import {
 } from "@/app/actions/discovered-jobs";
 import { SOURCE_TYPE_LABELS } from "@/lib/scrapers/source-labels";
 import type { DiscoveredJob } from "@/lib/generated/prisma/client";
-import type { SortBy } from "@/components/search/search-filter-sidebar";
-
-// DiscoveredJob plus a server-computed flag indicating the user already
-// has this role in their tracked Job list — either because they clicked
-// Import (importedJobId set) OR because a Job exists with the same
-// (source, sourceId) regardless of import history. See the page server
-// component for how the flag is computed.
-export type LeadWithStatus = DiscoveredJob & { inMyJobs: boolean };
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -48,9 +36,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-// Pagination size. 50 keeps the DOM cheap even with 5k+ leads in the
-// underlying dataset.
-const PAGE_SIZE = 50;
+// The page server component selects fields explicitly (no `description`),
+// so the row type drops it via Omit. Plus the server-computed inMyJobs
+// flag. If the page ever adds description back to the select, update this.
+export type LeadWithStatus = Omit<DiscoveredJob, "description"> & {
+  inMyJobs: boolean;
+};
 
 // ============================================================================
 // Cell helpers
@@ -60,7 +51,6 @@ function Dash() {
   return <span className="text-muted-foreground">—</span>;
 }
 
-// "3 days ago" / "2 weeks ago" — short relative format for the table.
 function formatRelative(date: Date | null): string {
   if (!date) return "—";
   const diffMs = Date.now() - date.getTime();
@@ -74,33 +64,18 @@ function formatRelative(date: Date | null): string {
 }
 
 // ============================================================================
-// Location cell — natural CSS wrap, clamped at LOC_MAX_LINES, expandable
+// Location cell — natural CSS wrap, clamped at 5 lines, expandable
 // ============================================================================
 
-// Cap the visible height before the expand arrow shows up. We use the
-// Tailwind class `line-clamp-5` (literal, can't interpolate — Tailwind
-// generates classes at build time). If you change 5 here, update the
-// className below too.
-//
-// Fixed width for the column so the text has something to wrap against.
-// 180px ≈ 22ch of regular text — wide enough for "San Francisco, CA"
-// without breaking, narrow enough to keep the table tight.
 const LOC_MAX_WIDTH = "max-w-[180px]";
 
 function LocationCell({ value }: { value: string | null }) {
   const [expanded, setExpanded] = useState(false);
-  // Whether the text actually overflows the clamp. We can't know this from
-  // string length alone (column width, font metrics, wrap points all
-  // matter) — measure after render via a ref.
   const [isClamped, setIsClamped] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!ref.current) return;
-    // scrollHeight > clientHeight when -webkit-line-clamp is hiding rows.
-    // When expanded, the clamp class is removed, scrollHeight == clientHeight,
-    // and this would flip back to false — but we still want the toggle
-    // button visible. We OR with `expanded` in the JSX to keep it shown.
     setIsClamped(ref.current.scrollHeight > ref.current.clientHeight);
   }, [value, expanded]);
 
@@ -112,8 +87,6 @@ function LocationCell({ value }: { value: string | null }) {
         ref={ref}
         className={cn(
           "break-words leading-snug",
-          // line-clamp-N uses -webkit-line-clamp: shows N lines max, ellipsis
-          // on the last. Tailwind v4 ships line-clamp-1..6 + line-clamp-none.
           !expanded && "line-clamp-5",
         )}
       >
@@ -144,18 +117,13 @@ function LocationCell({ value }: { value: string | null }) {
 }
 
 // ============================================================================
-// Row action buttons (Import + Dismiss)
+// Row action buttons (Add to My Jobs / In Your Jobs + Dismiss)
 // ============================================================================
 
 function RowActions({ lead }: { lead: LeadWithStatus }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  // inMyJobs covers both "user clicked Import" (importedJobId set) AND
-  // "user already has a Job with the same source+sourceId" (e.g. they
-  // imported it from a different DiscoveredJob row, or it was synced from
-  // elsewhere). The page server component computes this — see how the
-  // existingJobKeys set is built.
   const isImported = lead.inMyJobs;
 
   function handleImport() {
@@ -177,10 +145,6 @@ function RowActions({ lead }: { lead: LeadWithStatus }) {
   return (
     <div className="flex items-center justify-end gap-1">
       {isImported ? (
-        // Non-clickable "Imported" indicator. Lives where the Import button
-        // was so the row's actions column doesn't change layout. The
-        // dismiss button stays available so the user can still clear the
-        // lead from the search view if they want.
         <span
           className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
           title="This role is already in My Jobs"
@@ -225,18 +189,15 @@ function RowActions({ lead }: { lead: LeadWithStatus }) {
 // Column definitions
 // ============================================================================
 
-// Column widths in pixels. Table is set to `table-fixed` (see render below),
-// so these are enforced rather than advisory. Role gets no `size` — under
-// table-fixed, the unspecified column absorbs all remaining width, which
-// means long role titles get the most room.
-//
-// Sum of fixed widths: 130 + 200 + 130 + 90 + 130 = 680px. The Role column
-// gets whatever's left in the main area (typically ~250-400px on a laptop).
+// Server-side sort means clicking column headers wouldn't change anything
+// across the full dataset — only the visible 50. To avoid a misleading
+// affordance, all columns have enableSorting: false. Sort is sidebar-only.
 const columns: ColumnDef<LeadWithStatus>[] = [
   {
     accessorKey: "company",
     header: "Company",
     size: 130,
+    enableSorting: false,
     cell: ({ getValue }) => (
       <span className="font-medium">{getValue<string>()}</span>
     ),
@@ -244,12 +205,9 @@ const columns: ColumnDef<LeadWithStatus>[] = [
   {
     accessorKey: "title",
     header: "Role",
-    // No size → flex column under table-fixed.
+    enableSorting: false,
     cell: ({ row }) => {
       const lead = row.original;
-      // Title links out to the apply URL in a new tab. Most leads' value to
-      // the user is reading the actual posting, so click-target = link
-      // is the right default.
       return (
         <a
           href={lead.url}
@@ -267,12 +225,14 @@ const columns: ColumnDef<LeadWithStatus>[] = [
     accessorKey: "location",
     header: "Location",
     size: 200,
+    enableSorting: false,
     cell: ({ getValue }) => <LocationCell value={getValue<string | null>()} />,
   },
   {
     accessorKey: "source",
     header: "Source",
     size: 130,
+    enableSorting: false,
     cell: ({ getValue }) => {
       const v = getValue<keyof typeof SOURCE_TYPE_LABELS>();
       return (
@@ -286,45 +246,60 @@ const columns: ColumnDef<LeadWithStatus>[] = [
     accessorKey: "postedAt",
     header: "Posted",
     size: 90,
+    enableSorting: false,
     cell: ({ row }) => (
       <span className="text-xs text-muted-foreground">
         {formatRelative(row.original.postedAt)}
       </span>
     ),
-    // Sort newest-first when active.
-    sortingFn: (a, b) => {
-      const av = a.original.postedAt?.getTime() ?? 0;
-      const bv = b.original.postedAt?.getTime() ?? 0;
-      return av - bv;
-    },
   },
-  // (Discovered column intentionally dropped — Posted carries the relevant
-  // recency info, and dropping a column gives the rest more breathing room.)
   {
     id: "actions",
     header: "",
-    size: 130,
+    size: 160,
     enableSorting: false,
     cell: ({ row }) => <RowActions lead={row.original} />,
   },
 ];
 
-// Cells that need to wrap rather than truncate. The default `TableCell`
-// from components/ui/table.tsx has `whitespace-nowrap` baked in; this set
-// tells the render loop to override that for the long-content columns.
 const WRAPPING_COLUMNS = new Set(["company", "title", "location"]);
 
 // ============================================================================
-// Search bar
+// Search bar — URL-driven via debounced onQueryChange
 // ============================================================================
 
+const SEARCH_DEBOUNCE_MS = 400;
+
+// Local state lets typing feel instant even though the URL update (and
+// resulting server re-fetch) is debounced. We initialize from
+// `initialValue` but DON'T re-sync if the prop changes later — adding a
+// useEffect to sync would trip the setState-in-effect lint, and keying
+// the component on the prop would remount mid-typing and steal focus.
+// Trade-off: browser back/forward may leave the input slightly stale.
+// User can clear the box to reset; acceptable for an uncommon case.
 function SearchBar({
-  value,
+  initialValue,
   onChange,
 }: {
-  value: string;
-  onChange: (v: string) => void;
+  initialValue: string;
+  onChange: (value: string) => void;
 }) {
+  const [value, setValue] = useState(initialValue);
+
+  // Track the latest committed value to avoid pushing redundant URL
+  // updates on every keystroke after debounce fires.
+  const lastCommittedRef = useRef(initialValue);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (value !== lastCommittedRef.current) {
+        lastCommittedRef.current = value;
+        onChange(value);
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [value, onChange]);
+
   return (
     <div className="relative">
       <SearchIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -332,7 +307,7 @@ function SearchBar({
         type="search"
         placeholder="Search company, role, location…"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => setValue(e.target.value)}
         className="pl-9"
       />
     </div>
@@ -345,69 +320,44 @@ function SearchBar({
 
 export function SearchTable({
   leads,
-  sortBy,
+  page,
+  pageCount,
+  pageSize,
+  total,
+  q,
+  onQueryChange,
+  onPageChange,
 }: {
   leads: LeadWithStatus[];
-  sortBy: SortBy;
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+  q: string;
+  onQueryChange: (value: string) => void;
+  onPageChange: (page: number) => void;
 }) {
-  // Initial sort derived from the sidebar's Sort By dropdown. The wrapper
-  // (SearchView) re-keys this table when sortBy changes so this init
-  // runs again and gives a fresh sorting state — meanwhile column-header
-  // clicks can override locally without disturbing the dropdown.
-  const [sorting, setSorting] = useState<SortingState>(() => [
-    { id: "postedAt", desc: sortBy === "newest" },
-  ]);
-  const [globalFilter, setGlobalFilter] = useState("");
-
+  // TanStack table without filter/sort/pagination row models — those all
+  // happen on the server now. The table is purely a renderer for the
+  // page of rows we received.
   const table = useReactTable({
     data: leads,
     columns,
-    state: { sorting, globalFilter },
-    onSortingChange: setSorting,
-    onGlobalFilterChange: setGlobalFilter,
-    globalFilterFn: (row, _id, value) => {
-      const search = String(value).trim().toLowerCase();
-      if (!search) return true;
-      const l = row.original;
-      const haystack = [l.company, l.title, l.location]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(search);
-    },
     getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    initialState: { pagination: { pageSize: PAGE_SIZE } },
   });
 
   const rows = table.getRowModel().rows;
-  const pageIndex = table.getState().pagination.pageIndex;
-  const pageCount = table.getPageCount();
-  const totalRows = table.getFilteredRowModel().rows.length;
 
-  // Memoize so the filter input doesn't recompute "showing N–M of K" labels
-  // on every keystroke unrelated to pagination.
-  const pageLabel = useMemo(() => {
-    if (totalRows === 0) return "0 of 0";
-    const start = pageIndex * PAGE_SIZE + 1;
-    const end = Math.min(start + rows.length - 1, totalRows);
-    return `${start}–${end} of ${totalRows}`;
-  }, [pageIndex, rows.length, totalRows]);
+  // "1–50 of 3,217" style label. Empty when there are no rows.
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(start + leads.length - 1, total);
+  const pageLabel = total === 0 ? "0 of 0" : `${start}–${end} of ${total}`;
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-3">
-      <SearchBar value={globalFilter} onChange={setGlobalFilter} />
+      <SearchBar initialValue={q} onChange={onQueryChange} />
 
       <div className="rounded-lg border">
-        {/*
-          `table-fixed` makes columns honor their declared widths instead of
-          growing to fit content. Combined with the per-column `size` on the
-          column defs (rendered into `style={{ width }}` below), this keeps
-          the table inside the viewport without horizontal scroll. The Role
-          column has no `size` so it absorbs the remaining space.
-        */}
         <Table className="table-fixed">
           <TableHeader>
             {table.getHeaderGroups().map((headerGroup) => (
@@ -438,7 +388,7 @@ export function SearchTable({
                   colSpan={columns.length}
                   className="h-24 text-center text-sm text-muted-foreground"
                 >
-                  {leads.length === 0
+                  {total === 0 && q === ""
                     ? "No leads yet. Run a scrape from devtools (POST /api/scrape/run) to populate this list."
                     : "No leads match your search."}
                 </TableCell>
@@ -447,10 +397,6 @@ export function SearchTable({
               rows.map((row) => (
                 <TableRow key={row.id}>
                   {row.getVisibleCells().map((cell) => {
-                    // Long-content columns need to wrap rather than truncate;
-                    // override the default whitespace-nowrap baked into
-                    // TableCell. align-top so multi-line cells line up nicely
-                    // with the single-line ones in the same row.
                     const wraps = WRAPPING_COLUMNS.has(cell.column.id);
                     return (
                       <TableCell
@@ -473,8 +419,8 @@ export function SearchTable({
         </Table>
       </div>
 
-      {/* Pagination */}
-      {totalRows > PAGE_SIZE ? (
+      {/* Pagination — hidden when there's only one page of results. */}
+      {pageCount > 1 ? (
         <div className="flex items-center justify-between gap-2 text-sm">
           <span className="text-muted-foreground">{pageLabel}</span>
           <div className="flex items-center gap-1">
@@ -482,22 +428,22 @@ export function SearchTable({
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => table.previousPage()}
-              disabled={!table.getCanPreviousPage()}
+              onClick={() => onPageChange(page - 1)}
+              disabled={page <= 1}
               className="gap-1"
             >
               <ChevronLeftIcon className="size-4" />
               Prev
             </Button>
             <span className="text-xs text-muted-foreground">
-              Page {pageIndex + 1} of {pageCount}
+              Page {page} of {pageCount}
             </span>
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => table.nextPage()}
-              disabled={!table.getCanNextPage()}
+              onClick={() => onPageChange(page + 1)}
+              disabled={page >= pageCount}
               className="gap-1"
             >
               Next
