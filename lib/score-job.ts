@@ -1,10 +1,14 @@
-// Background helper that scores a single Job and writes the result back.
-// Designed to be called from inside `after()` so the response can return
-// immediately while scoring runs against Groq.
+// Helper that scores a single Job and writes the result back. Used in two
+// modes:
+//   - Background (inside `after()`) — fire-and-forget after create/import.
+//     Callers ignore the return value.
+//   - Foreground (inside `rescoreJob` server action) — user clicks Re-score
+//     and waits. The caller surfaces the reason on failure.
 //
 // Owns the full lifecycle:
 //   1. Load the user's resume (return early if no resume / no extracted text)
 //   2. Re-load the Job in case it was deleted between create and score
+//   2b. Backfill description from the URL if missing
 //   3. Call the scorer
 //   4. Write fit fields atomically (all five together, or none)
 //   5. revalidatePath("/") so the dashboard Fit column updates
@@ -14,33 +18,41 @@ import { prisma } from "@/lib/prisma";
 import { scoreFit } from "@/lib/fit-scorer";
 import { fetchJobDescriptionFromUrl } from "@/lib/fetch-job-description";
 
-// Never throws — any failure logs and exits. This is intentional: the caller
-// runs us via `after()` after the response has been sent, so there's nobody
-// to surface an error to. Leaving fit fields null is the correct user-facing
-// outcome on any failure path.
+// Discriminated status, mirrors the shape used elsewhere in the codebase.
+// Reasons are deliberately granular so the Re-score UI can give the user
+// useful feedback instead of a generic "failed".
+export type ScoreJobStatus =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "no_resume" //  user hasn't uploaded a resume (or extraction failed)
+        | "job_not_found" // job was deleted between create and score
+        | "no_description" // no description in DB AND none fetchable from URL
+        | "groq_failed"; // Groq call failed or returned an invalid shape
+    };
+
+// Never throws — every failure path returns a status. The background callers
+// ignore the result (logging is sufficient there); foreground callers use the
+// reason to render a contextual message.
 export async function scoreJobAndStore(
   userId: string,
   jobId: string,
-): Promise<void> {
+): Promise<ScoreJobStatus> {
   try {
-    // 1. Resume gate. No resume / no extracted text → silently leave the
-    //    fields null. Common path for users who haven't been to /profile yet.
+    // 1. Resume gate.
     const resume = await prisma.resume.findUnique({
       where: { userId },
       select: { extractedText: true },
     });
-    if (!resume?.extractedText) return;
+    if (!resume?.extractedText) return { ok: false, reason: "no_resume" };
 
-    // 2. Re-fetch the Job. Two reasons:
-    //    a) It could have been deleted between the create call and `after()`
-    //       firing (unlikely but possible if the user spams delete).
-    //    b) Keeps this helper self-contained — callers only pass two ids.
-    //    Ownership check happens via `where: { id, userId }`.
+    // 2. Re-fetch the Job. Ownership check happens via `where: { id, userId }`.
     const job = await prisma.job.findFirst({
       where: { id: jobId, userId },
       select: { title: true, company: true, description: true, url: true },
     });
-    if (!job) return;
+    if (!job) return { ok: false, reason: "job_not_found" };
 
     // 2b. Backfill description if missing. Happens for Simplify / Ouckah /
     //     vansh leads (those scrapers only return title + url, no JD). We
@@ -60,7 +72,8 @@ export async function scoreJobAndStore(
     }
 
     // 3. Call the scorer. It enforces minimum JD length internally — a job
-    //    with no description will come back `{ ok: false }` and we skip.
+    //    with no description will come back `{ ok: false }`.
+    if (!description) return { ok: false, reason: "no_description" };
     const result = await scoreFit(resume.extractedText, {
       title: job.title,
       company: job.company,
@@ -70,7 +83,12 @@ export async function scoreJobAndStore(
       console.warn(
         `Fit scoring skipped for job ${jobId} (user ${userId}): ${result.error}`,
       );
-      return;
+      // The scorer can fail two ways: short JD (mapped to no_description so
+      // the UI can suggest pasting one in) or Groq failure.
+      if (result.error.includes("description")) {
+        return { ok: false, reason: "no_description" };
+      }
+      return { ok: false, reason: "groq_failed" };
     }
 
     // 4. Atomic write — all five fields together. updateMany lets us scope
@@ -87,14 +105,15 @@ export async function scoreJobAndStore(
     });
 
     // 5. Bust the dashboard cache so the Fit column picks up the new score
-    //    on the next render. The user may already be on the dashboard
-    //    looking at the just-created row — a few seconds later they'll see
-    //    the score appear (after Next refreshes the page data).
+    //    on the next render.
     revalidatePath("/");
+
+    return { ok: true };
   } catch (err) {
     // Catch-all so a thrown error inside `after()` doesn't crash the
-    // serverless invocation. Logs the error for debugging but doesn't
-    // surface anything to the user.
+    // serverless invocation. Mapped to groq_failed since Prisma / network
+    // failures are equally opaque to the user.
     console.error(`scoreJobAndStore failed for job ${jobId}:`, err);
+    return { ok: false, reason: "groq_failed" };
   }
 }

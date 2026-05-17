@@ -23,13 +23,16 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import {
+  CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  MinusIcon,
   PencilIcon,
+  RefreshCwIcon,
   SearchIcon,
   Trash2Icon,
 } from "lucide-react";
-import { deleteJob, updateJobStatus } from "@/app/actions/jobs";
+import { deleteJob, rescoreJob, updateJobStatus } from "@/app/actions/jobs";
 import type { Contact, Job, JobStatus } from "@/lib/generated/prisma/client";
 import { ContactsSection } from "@/components/jobs/contacts-section";
 import { JobSheet } from "@/components/jobs/job-sheet";
@@ -86,6 +89,126 @@ function FitBadge({ score, summary }: { score: number; summary: string | null })
     >
       {score}
     </span>
+  );
+}
+
+// Section inside the expanded JobRowDetail that displays the AI fit score in
+// full: badge, one-line summary, strengths column, gaps column, plus a
+// Re-score button that re-runs the scorer for this single job.
+//
+// Four states the section can be in:
+//   - Scored: show summary + strengths + gaps + Re-score button
+//   - Unscored: show a status line ("Not scored yet"), still show Re-score
+//     button so the user can trigger it manually
+//   - In-flight: button shows "Scoring…" while the action is pending
+//   - Error: show the error string above the (re-enabled) button
+function FitSection({ job }: { job: JobWithContacts }) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function handleRescore() {
+    setError(null);
+    startTransition(async () => {
+      const result = await rescoreJob(job.id);
+      if (!result.ok) setError(result.error);
+    });
+  }
+
+  const scored = job.fitScore != null;
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-muted-foreground">Fit</div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={pending}
+          onClick={handleRescore}
+          className="h-7 gap-1 text-xs"
+        >
+          <RefreshCwIcon
+            className={`size-3.5 ${pending ? "animate-spin" : ""}`}
+          />
+          {pending ? "Scoring…" : scored ? "Re-score" : "Score"}
+        </Button>
+      </div>
+
+      {error ? (
+        <p className="mb-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+
+      {scored ? (
+        <div className="rounded-md bg-background/50 p-3">
+          <div className="mb-3 flex items-start gap-3">
+            <FitBadge score={job.fitScore!} summary={null} />
+            {job.fitSummary ? (
+              <p className="flex-1 text-sm leading-snug">{job.fitSummary}</p>
+            ) : null}
+          </div>
+
+          {(job.fitStrengths.length > 0 || job.fitGaps.length > 0) && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {job.fitStrengths.length > 0 && (
+                <FitBulletList
+                  label="Strengths"
+                  items={job.fitStrengths}
+                  tone="positive"
+                />
+              )}
+              {job.fitGaps.length > 0 && (
+                <FitBulletList
+                  label="Gaps"
+                  items={job.fitGaps}
+                  tone="negative"
+                />
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          Not scored yet. Click {scored ? "Re-score" : "Score"} to run the AI
+          fit analysis against your uploaded resume.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// One bulleted column inside the FitSection. Strengths get green checks,
+// gaps get red minus signs.
+function FitBulletList({
+  label,
+  items,
+  tone,
+}: {
+  label: string;
+  items: string[];
+  tone: "positive" | "negative";
+}) {
+  const Icon = tone === "positive" ? CheckIcon : MinusIcon;
+  const iconClass =
+    tone === "positive"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : "text-rose-600 dark:text-rose-400";
+  return (
+    <div>
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <ul className="grid gap-1.5 text-sm">
+        {items.map((item, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <Icon className={`mt-0.5 size-4 shrink-0 ${iconClass}`} />
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -170,6 +293,8 @@ function JobRowDetail({
           <p className="whitespace-pre-wrap">{job.notes}</p>
         </div>
       ) : null}
+
+      <FitSection job={job} />
 
       <ContactsSection
         jobId={job.id}

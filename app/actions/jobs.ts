@@ -161,6 +161,41 @@ export async function updateJobStatus(
   return { ok: true };
 }
 
+// ----- rescoreJob -----
+// Foreground re-scoring triggered by the Re-score button in the JobRowDetail.
+// Unlike the create/import flows (which run `scoreJobAndStore` inside
+// `after()`), this awaits the scorer inline so the UI can show pending state
+// and surface the reason on failure.
+export type RescoreJobResult =
+  | { ok: true }
+  | {
+      ok: false;
+      // User-facing message — already phrased for display in the UI.
+      error: string;
+    };
+
+export async function rescoreJob(jobId: string): Promise<RescoreJobResult> {
+  const userId = await requireUserId();
+
+  const status = await scoreJobAndStore(userId, jobId);
+  if (status.ok) return { ok: true };
+
+  switch (status.reason) {
+    case "no_resume":
+      return { ok: false, error: "Upload a resume first at /profile." };
+    case "job_not_found":
+      return { ok: false, error: "Job not found." };
+    case "no_description":
+      return {
+        ok: false,
+        error:
+          "No description on file and we couldn't fetch one from the URL. Paste a description in Edit and try again.",
+      };
+    case "groq_failed":
+      return { ok: false, error: "AI scoring failed. Try again in a moment." };
+  }
+}
+
 // ----- parseJobFromUrl -----
 // Fetches a job-posting URL, asks Groq to extract structured fields, and
 // returns them to the client for prefilling the AddJobSheet form. Pure read
