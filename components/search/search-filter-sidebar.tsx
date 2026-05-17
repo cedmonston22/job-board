@@ -5,7 +5,6 @@ import {
   saveScrapeFilter,
   type DiscoveredJobActionState,
 } from "@/app/actions/discovered-jobs";
-import { MAJOR_OPTIONS } from "@/lib/major-keywords";
 import type { ScrapeFilter } from "@/lib/generated/prisma/client";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -17,12 +16,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { MajorCombobox } from "@/components/search/major-combobox";
 
-// Sentinel value for the "no umbrella" option in the dropdown. Base UI's
-// Select treats empty string as "no value" and renders the placeholder,
-// which would visually conflict — we use a real string and translate to
-// null in the submitted form data.
-const NO_MAJOR = "__none__";
+// Sort values the dropdown emits. Mapped to TanStack SortingState by the
+// parent SearchView. "newest" / "oldest" both sort on postedAt — leads
+// without a postedAt sort to the bottom either way.
+export type SortBy = "newest" | "oldest";
 
 // Sidebar form on /jobs/search. Saves the user's major + roles to
 // ScrapeFilter. The filter applies both at scrape time (lib/scrapers/
@@ -33,10 +32,14 @@ export function SearchFilterSidebar({
   filter,
   totalLeads,
   shownLeads,
+  sortBy,
+  onSortByChange,
 }: {
   filter: ScrapeFilter | null;
   totalLeads: number; // unfiltered count of active leads (before filter applied)
   shownLeads: number; // count after filter applied
+  sortBy: SortBy;
+  onSortByChange: (value: SortBy) => void;
 }) {
   const [state, formAction, pending] = useActionState<
     DiscoveredJobActionState | undefined,
@@ -60,32 +63,38 @@ export function SearchFilterSidebar({
           of {totalLeads} active lead{totalLeads === 1 ? "" : "s"}
         </div>
 
+        {/* Sort by — inside the form visually but NOT a form field (no
+            `name` attribute), so changing it just updates client state
+            and doesn't submit. Save Filter only persists Major + Role. */}
         <div className="grid gap-1.5">
-          <Label htmlFor="filter-major">Major</Label>
+          <Label htmlFor="filter-sort">Sort by</Label>
           <Select
-            name="major"
-            defaultValue={filter?.major ?? NO_MAJOR}
+            value={sortBy}
+            onValueChange={(v) => {
+              if (v) onSortByChange(v as SortBy);
+            }}
           >
-            <SelectTrigger id="filter-major" className="w-full">
+            <SelectTrigger id="filter-sort" className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={NO_MAJOR}>No umbrella</SelectItem>
-              {MAJOR_OPTIONS.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {m}
-                </SelectItem>
-              ))}
+              <SelectItem value="newest">Posted: newest first</SelectItem>
+              <SelectItem value="oldest">Posted: oldest first</SelectItem>
             </SelectContent>
           </Select>
-          <p className="text-xs text-muted-foreground">
-            Title must include one of the major&apos;s keywords (e.g. Computer
-            Science → engineer / developer / SWE / …).
-          </p>
         </div>
 
         <div className="grid gap-1.5">
-          <Label htmlFor="filter-roles">Specific roles (optional)</Label>
+          <Label>Major</Label>
+          {/* Combobox submits its value via a hidden input named "major"
+              — saveScrapeFilter picks it up the same way it picked up the
+              old <Select name="major">. Empty string ("") means "no
+              umbrella", which the server action turns into null. */}
+          <MajorCombobox name="major" initialValue={filter?.major ?? null} />
+        </div>
+
+        <div className="grid gap-1.5">
+          <Label htmlFor="filter-roles">Role</Label>
           <Textarea
             id="filter-roles"
             name="roles"
@@ -94,10 +103,6 @@ export function SearchFilterSidebar({
             rows={3}
             className="text-sm"
           />
-          <p className="text-xs text-muted-foreground">
-            Comma- or newline-separated. When set, this OVERRIDES the major
-            umbrella — title must match one of these.
-          </p>
         </div>
 
         {state?.error ? (
@@ -116,6 +121,7 @@ export function SearchFilterSidebar({
   );
 }
 
-// NO_MAJOR is a UI-only sentinel — the server action strips it before
-// the Zod schema sees the form data so it parses cleanly as "no major
-// selected." See saveScrapeFilter in app/actions/discovered-jobs.ts.
+// "No umbrella" submits as empty string from the hidden input → the Zod
+// schema's emptyToUndefined preprocess turns it into undefined → optional
+// field skipped → DB column set to null. The old NO_MAJOR sentinel +
+// server-side strip dance is no longer needed.

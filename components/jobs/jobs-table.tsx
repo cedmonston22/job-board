@@ -587,8 +587,8 @@ const columns: ColumnDef<JobWithContacts>[] = [
 
 // Long-content cells that need to wrap rather than truncate. The default
 // TableCell from components/ui/table.tsx ships with `whitespace-nowrap`;
-// this set tells the row renderer to override that for the role column.
-const WRAPPING_COLUMNS = new Set(["title"]);
+// this set tells the row renderer to override that for the named columns.
+const WRAPPING_COLUMNS = new Set(["company", "title"]);
 
 // ============================================================================
 // Per-row component

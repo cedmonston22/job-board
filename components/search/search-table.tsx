@@ -12,6 +12,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 import {
+  CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -28,6 +29,14 @@ import {
 } from "@/app/actions/discovered-jobs";
 import { SOURCE_TYPE_LABELS } from "@/lib/scrapers/source-labels";
 import type { DiscoveredJob } from "@/lib/generated/prisma/client";
+import type { SortBy } from "@/components/search/search-filter-sidebar";
+
+// DiscoveredJob plus a server-computed flag indicating the user already
+// has this role in their tracked Job list — either because they clicked
+// Import (importedJobId set) OR because a Job exists with the same
+// (source, sourceId) regardless of import history. See the page server
+// component for how the flag is computed.
+export type LeadWithStatus = DiscoveredJob & { inMyJobs: boolean };
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -138,9 +147,16 @@ function LocationCell({ value }: { value: string | null }) {
 // Row action buttons (Import + Dismiss)
 // ============================================================================
 
-function RowActions({ lead }: { lead: DiscoveredJob }) {
+function RowActions({ lead }: { lead: LeadWithStatus }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+
+  // inMyJobs covers both "user clicked Import" (importedJobId set) AND
+  // "user already has a Job with the same source+sourceId" (e.g. they
+  // imported it from a different DiscoveredJob row, or it was synced from
+  // elsewhere). The page server component computes this — see how the
+  // existingJobKeys set is built.
+  const isImported = lead.inMyJobs;
 
   function handleImport() {
     setError(null);
@@ -160,18 +176,32 @@ function RowActions({ lead }: { lead: DiscoveredJob }) {
 
   return (
     <div className="flex items-center justify-end gap-1">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        title="Import to My Jobs"
-        onClick={handleImport}
-        disabled={pending}
-        className="gap-1"
-      >
-        <PlusIcon className="size-4" />
-        Import
-      </Button>
+      {isImported ? (
+        // Non-clickable "Imported" indicator. Lives where the Import button
+        // was so the row's actions column doesn't change layout. The
+        // dismiss button stays available so the user can still clear the
+        // lead from the search view if they want.
+        <span
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+          title="This role is already in My Jobs"
+        >
+          <CheckIcon className="size-3.5" />
+          In Your Jobs
+        </span>
+      ) : (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          title="Add to My Jobs"
+          onClick={handleImport}
+          disabled={pending}
+          className="gap-1"
+        >
+          <PlusIcon className="size-4" />
+          Add to My Jobs
+        </Button>
+      )}
       <Button
         type="button"
         variant="ghost"
@@ -202,7 +232,7 @@ function RowActions({ lead }: { lead: DiscoveredJob }) {
 //
 // Sum of fixed widths: 130 + 200 + 130 + 90 + 130 = 680px. The Role column
 // gets whatever's left in the main area (typically ~250-400px on a laptop).
-const columns: ColumnDef<DiscoveredJob>[] = [
+const columns: ColumnDef<LeadWithStatus>[] = [
   {
     accessorKey: "company",
     header: "Company",
@@ -282,7 +312,7 @@ const columns: ColumnDef<DiscoveredJob>[] = [
 // Cells that need to wrap rather than truncate. The default `TableCell`
 // from components/ui/table.tsx has `whitespace-nowrap` baked in; this set
 // tells the render loop to override that for the long-content columns.
-const WRAPPING_COLUMNS = new Set(["title", "location"]);
+const WRAPPING_COLUMNS = new Set(["company", "title", "location"]);
 
 // ============================================================================
 // Search bar
@@ -313,12 +343,19 @@ function SearchBar({
 // Main table
 // ============================================================================
 
-export function SearchTable({ leads }: { leads: DiscoveredJob[] }) {
-  const [sorting, setSorting] = useState<SortingState>([
-    // Default: newest posted first. (Discovered column was dropped — Posted
-    // carries the recency info. postedAt can be null for adapters that
-    // don't expose a date; those rows sort to the bottom.)
-    { id: "postedAt", desc: true },
+export function SearchTable({
+  leads,
+  sortBy,
+}: {
+  leads: LeadWithStatus[];
+  sortBy: SortBy;
+}) {
+  // Initial sort derived from the sidebar's Sort By dropdown. The wrapper
+  // (SearchView) re-keys this table when sortBy changes so this init
+  // runs again and gives a fresh sorting state — meanwhile column-header
+  // clicks can override locally without disturbing the dropdown.
+  const [sorting, setSorting] = useState<SortingState>(() => [
+    { id: "postedAt", desc: sortBy === "newest" },
   ]);
   const [globalFilter, setGlobalFilter] = useState("");
 

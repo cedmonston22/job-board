@@ -29,14 +29,13 @@ export async function saveScrapeFilter(
 ): Promise<DiscoveredJobActionState> {
   const userId = await requireUserId();
 
-  // The sidebar dropdown uses a sentinel `__none__` value to mean
-  // "no major selected" (Base UI's Select can't take empty-string values
-  // without rendering as a placeholder). Translate it to "" so the Zod
-  // schema's emptyToUndefined preprocess turns it into undefined cleanly.
-  const raw = Object.fromEntries(formData);
-  if (raw.major === "__none__") raw.major = "";
-
-  const parsed = scrapeFilterInputSchema.safeParse(raw);
+  // The MajorCombobox sends an empty string for the "No umbrella" option,
+  // which the Zod schema's emptyToUndefined preprocess turns into
+  // undefined → optional field skipped → DB column ends up null. No
+  // sentinel translation needed.
+  const parsed = scrapeFilterInputSchema.safeParse(
+    Object.fromEntries(formData),
+  );
   if (!parsed.success) {
     return {
       ok: false,

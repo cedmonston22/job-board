@@ -323,6 +323,19 @@ export async function deleteJob(id: string): Promise<JobActionState> {
 
   if (result.count === 0) return { ok: false, error: "Job not found" };
 
+  // Clear importedJobId on any DiscoveredJob rows that pointed at the
+  // deleted Job. Without this, the search page's "In Your Jobs" badge
+  // would keep showing because lead.importedJobId still has the (now
+  // dangling) id. With it cleared, the lead's "Add to My Jobs" button
+  // comes back so the user can re-import.
+  await prisma.discoveredJob.updateMany({
+    where: { userId, importedJobId: id },
+    data: { importedJobId: null },
+  });
+
+  // Both surfaces are stale: dashboard loses the row, search page may
+  // need to update the badge → button on a matching lead.
   revalidatePath("/");
+  revalidatePath("/jobs/search");
   return { ok: true };
 }
