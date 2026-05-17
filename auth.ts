@@ -1,7 +1,6 @@
 import NextAuth from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import Google from "next-auth/providers/google";
-import Resend from "next-auth/providers/resend";
 import { prisma } from "@/lib/prisma";
 
 // Auth.js v5 (the next major NextAuth release, still in beta) lets us
@@ -13,8 +12,10 @@ import { prisma } from "@/lib/prisma";
 //   signIn   — server action that starts a sign-in flow
 //   signOut  — server action that destroys the session
 //
-// The PrismaAdapter persists Users, Accounts, Sessions and VerificationTokens
-// to our Postgres database via the Prisma client we set up in lib/prisma.ts.
+// The PrismaAdapter persists Users, Accounts, and Sessions to our Postgres
+// database via the Prisma client we set up in lib/prisma.ts. (The schema also
+// has a VerificationToken table; it sits empty until we add a magic-link
+// provider later.)
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
 
@@ -22,11 +23,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // When called with no arguments, the provider reads AUTH_GOOGLE_ID and
     // AUTH_GOOGLE_SECRET from the environment automatically.
     Google,
-
-    // Resend reads AUTH_RESEND_KEY from the environment. `from` is the email
-    // address magic-link messages will be sent from — must be a verified
-    // domain in Resend (or use onboarding@resend.dev during development).
-    Resend({ from: process.env.EMAIL_FROM }),
   ],
 
   // Database-backed sessions: a Session row is created in Postgres on login
@@ -35,8 +31,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // invalidate. With a database adapter, "database" is the right default.
   session: { strategy: "database" },
 
-  // Custom login page so we control the look + add the Resend provider next
-  // to Google in one UI. Without this, Auth.js renders its built-in page.
+  // Custom login page so we control the look. Without this, Auth.js renders
+  // its built-in page.
   pages: {
     signIn: "/login",
   },
