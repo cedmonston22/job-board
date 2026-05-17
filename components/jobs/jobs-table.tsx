@@ -1,25 +1,40 @@
 "use client";
 
-import { Fragment, useOptimistic, useState, useTransition } from "react";
+import {
+  Fragment,
+  useMemo,
+  useOptimistic,
+  useState,
+  useTransition,
+} from "react";
 import {
   type ColumnDef,
+  type ColumnFiltersState,
   type ExpandedState,
+  type FilterFn,
   type Row,
+  type SortingFn,
+  type SortingState,
   flexRender,
   getCoreRowModel,
   getExpandedRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   PencilIcon,
+  SearchIcon,
   Trash2Icon,
 } from "lucide-react";
 import { deleteJob, updateJobStatus } from "@/app/actions/jobs";
 import type { Contact, Job, JobStatus } from "@/lib/generated/prisma/client";
 import { ContactsSection } from "@/components/jobs/contacts-section";
 import { JobSheet } from "@/components/jobs/job-sheet";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 // Job augmented with its contacts. The page query includes them; this type
 // flows through the table to the detail panel.
@@ -283,6 +298,204 @@ function formatDate(d: Date): string {
 }
 
 // ============================================================================
+// Sort / filter helpers
+// ============================================================================
+
+// Status sorts in pipeline order, not alphabetical: SAVED → APPLIED → REJECTED.
+// Alphabetical (APPLIED, REJECTED, SAVED) would feel random.
+const STATUS_ORDER: Record<JobStatus, number> = {
+  SAVED: 0,
+  APPLIED: 1,
+  REJECTED: 2,
+};
+
+const statusSortingFn: SortingFn<JobWithContacts> = (a, b) =>
+  STATUS_ORDER[a.original.status] - STATUS_ORDER[b.original.status];
+
+// Global filter: case-insensitive substring search across the fields that make
+// sense to search by. Includes `description` (autofilled JD text) so a search
+// for keywords like "react" or "typescript" finds matching postings even
+// though description isn't a visible column.
+const globalFilterFn: FilterFn<JobWithContacts> = (row, _columnId, value) => {
+  const search = String(value).trim().toLowerCase();
+  if (!search) return true;
+  const j = row.original;
+  const haystack = [j.company, j.title, j.location, j.notes, j.description]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(search);
+};
+
+// Search input: lives above the table, spans the full width of the main column.
+function SearchBar({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="relative">
+      <SearchIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        type="search"
+        placeholder="Search company, role, location, notes, description…"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="pl-9"
+      />
+    </div>
+  );
+}
+
+// All the filter values the sidebar manages, hoisted into one type so the
+// JobsTable owner and the sidebar speak the same language.
+export type SidebarFilters = {
+  status: "ALL" | JobStatus;
+  company: string; // "ALL" or a specific company name
+  roleSort: "DEFAULT" | "ASC" | "DESC";
+  matchSort: "DEFAULT" | "DESC" | "ASC"; // DESC = highest first, ASC = lowest first
+};
+
+// One labeled section of the sidebar. Layout repeats for every filter — pulling
+// it out keeps the JSX in FiltersSidebar readable.
+function SidebarSection({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <Label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {label}
+      </Label>
+      {children}
+    </div>
+  );
+}
+
+function FiltersSidebar({
+  filters,
+  onChange,
+  statusCounts,
+  companies,
+}: {
+  filters: SidebarFilters;
+  onChange: (next: SidebarFilters) => void;
+  statusCounts: {
+    ALL: number;
+    SAVED: number;
+    APPLIED: number;
+    REJECTED: number;
+  };
+  companies: string[];
+}) {
+  // Each handler builds a fresh SidebarFilters object so the parent can replace
+  // its single state value in one setState call.
+  const set = <K extends keyof SidebarFilters>(
+    key: K,
+    value: SidebarFilters[K],
+  ) => onChange({ ...filters, [key]: value });
+
+  return (
+    <aside className="w-full shrink-0 md:w-56">
+      <div className="grid gap-4 rounded-lg border p-4">
+        <h3 className="text-sm font-semibold">Filters</h3>
+
+        {/* Status */}
+        <SidebarSection label="Status">
+          <Select
+            value={filters.status}
+            onValueChange={(v) => {
+              if (v) set("status", v as SidebarFilters["status"]);
+            }}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All ({statusCounts.ALL})</SelectItem>
+              <SelectItem value="SAVED">
+                Saved ({statusCounts.SAVED})
+              </SelectItem>
+              <SelectItem value="APPLIED">
+                Applied ({statusCounts.APPLIED})
+              </SelectItem>
+              <SelectItem value="REJECTED">
+                Rejected ({statusCounts.REJECTED})
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SidebarSection>
+
+        {/* Company */}
+        <SidebarSection label="Company">
+          <Select
+            value={filters.company}
+            onValueChange={(v) => {
+              if (v) set("company", v);
+            }}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All companies</SelectItem>
+              {companies.map((c) => (
+                <SelectItem key={c} value={c}>
+                  {c}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SidebarSection>
+
+        {/* Role */}
+        <SidebarSection label="Role">
+          <Select
+            value={filters.roleSort}
+            onValueChange={(v) => {
+              if (v) set("roleSort", v as SidebarFilters["roleSort"]);
+            }}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="DEFAULT">Default</SelectItem>
+              <SelectItem value="ASC">Sort A → Z</SelectItem>
+              <SelectItem value="DESC">Sort Z → A</SelectItem>
+            </SelectContent>
+          </Select>
+        </SidebarSection>
+
+        {/* Match % */}
+        <SidebarSection label="Match %">
+          <Select
+            value={filters.matchSort}
+            onValueChange={(v) => {
+              if (v) set("matchSort", v as SidebarFilters["matchSort"]);
+            }}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="DEFAULT">Default</SelectItem>
+              <SelectItem value="DESC">Highest first</SelectItem>
+              <SelectItem value="ASC">Lowest first</SelectItem>
+            </SelectContent>
+          </Select>
+        </SidebarSection>
+      </div>
+    </aside>
+  );
+}
+
+// ============================================================================
 // Column definitions
 // ============================================================================
 
@@ -293,6 +506,8 @@ const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "company",
     header: "Company",
+    // Sidebar company dropdown filters via exact-match.
+    filterFn: "equalsString",
     cell: ({ getValue }) => (
       <span className="font-medium">{getValue<string>()}</span>
     ),
@@ -304,12 +519,17 @@ const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "status",
     header: "Status",
-    // Cell rendered by JobRow — see comment above.
+    sortingFn: statusSortingFn,
+    // The sidebar status dropdown triggers exact-match filtering on this id.
+    filterFn: "equalsString",
+    // Cell rendered by JobRow with optimistic state — see comment above.
     cell: () => null,
   },
   {
     accessorKey: "fitScore",
     header: "Match %",
+    // nulls sort last so jobs without a fit score don't crowd the top.
+    sortUndefined: "last",
     cell: ({ getValue }) => {
       const v = getValue<number | null>();
       return v == null ? <Dash /> : <span>{v}%</span>;
@@ -318,6 +538,7 @@ const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "coverLetter",
     header: "Cover Letter",
+    enableSorting: false,
     cell: ({ getValue }) => {
       const v = getValue<string | null>();
       return v == null ? (
@@ -331,6 +552,7 @@ const columns: ColumnDef<JobWithContacts>[] = [
     id: "more",
     header: "",
     size: 96,
+    enableSorting: false,
     cell: ({ row }) => (
       <Button
         variant="ghost"
@@ -416,50 +638,156 @@ function JobRow({
 // ============================================================================
 
 export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
+  // ---- table state ----
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [globalFilter, setGlobalFilter] = useState("");
+  const [filters, setFilters] = useState<SidebarFilters>({
+    status: "ALL",
+    company: "ALL",
+    roleSort: "DEFAULT",
+    matchSort: "DEFAULT",
+  });
   const [expanded, setExpanded] = useState<ExpandedState>({});
-
-  // Which job is being edited (if any). Kept at the table level so we render a
-  // single shared <JobSheet>. The `key` prop on the sheet (job.id when editing)
-  // forces a fresh mount per edit session so prefill defaults pick up the new
-  // row's values.
   const [editingJob, setEditingJob] = useState<JobWithContacts | null>(null);
+
+  // Column filters are derived from the sidebar's filter state. We emit only
+  // the entries that are actually narrowing (skipping the "ALL" sentinel).
+  // useMemo keeps the array identity stable when nothing relevant changed —
+  // otherwise TanStack would re-run the filter pipeline on every unrelated
+  // render (e.g. typing in the search box).
+  const columnFilters: ColumnFiltersState = useMemo(() => {
+    const c: ColumnFiltersState = [];
+    if (filters.status !== "ALL") {
+      c.push({ id: "status", value: filters.status });
+    }
+    if (filters.company !== "ALL") {
+      c.push({ id: "company", value: filters.company });
+    }
+    return c;
+  }, [filters.status, filters.company]);
+
+  // Role and Match % dropdowns are shortcuts for setting the table's sort
+  // state. Both can be active at once (multi-sort): pick Role A→Z and Match
+  // Highest, and rows sort by role first, then by match within ties.
+  function applyColumnSort(
+    sorting: SortingState,
+    columnId: string,
+    direction: "DEFAULT" | "ASC" | "DESC",
+  ): SortingState {
+    const others = sorting.filter((entry) => entry.id !== columnId);
+    if (direction === "DEFAULT") return others;
+    return [...others, { id: columnId, desc: direction === "DESC" }];
+  }
+
+  function handleFiltersChange(next: SidebarFilters) {
+    if (next.roleSort !== filters.roleSort) {
+      setSorting((s) => applyColumnSort(s, "title", next.roleSort));
+    }
+    if (next.matchSort !== filters.matchSort) {
+      setSorting((s) => applyColumnSort(s, "fitScore", next.matchSort));
+    }
+    setFilters(next);
+  }
 
   const table = useReactTable({
     data: jobs,
     columns,
-    state: { expanded },
+    state: { sorting, globalFilter, columnFilters, expanded },
+    onSortingChange: setSorting,
+    onGlobalFilterChange: setGlobalFilter,
     onExpandedChange: setExpanded,
+    globalFilterFn,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
     getRowCanExpand: () => true,
   });
 
+  const rows = table.getRowModel().rows;
+  const noMatches = rows.length === 0 && jobs.length > 0;
+
+  // Status counts off the unfiltered data — what shows in the dropdown labels.
+  // Memoized so we don't re-tally on every search keystroke.
+  const statusCounts = useMemo(() => {
+    const c = { ALL: jobs.length, SAVED: 0, APPLIED: 0, REJECTED: 0 };
+    for (const job of jobs) c[job.status]++;
+    return c;
+  }, [jobs]);
+
+  // Sorted unique company list for the Company dropdown options.
+  const companies = useMemo(() => {
+    const set = new Set(jobs.map((j) => j.company));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [jobs]);
+
+  function clearFilters() {
+    setGlobalFilter("");
+    handleFiltersChange({
+      status: "ALL",
+      company: "ALL",
+      roleSort: "DEFAULT",
+      matchSort: "DEFAULT",
+    });
+  }
+
   return (
     <>
-      <div className="rounded-lg border">
-        <Table>
-          <TableHeader>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header) => (
-                  <TableHead key={header.id}>
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(
-                          header.column.columnDef.header,
-                          header.getContext(),
-                        )}
-                  </TableHead>
+      <div className="flex flex-col gap-4 md:flex-row">
+        <FiltersSidebar
+          filters={filters}
+          onChange={handleFiltersChange}
+          statusCounts={statusCounts}
+          companies={companies}
+        />
+
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <SearchBar value={globalFilter} onChange={setGlobalFilter} />
+
+          <div className="rounded-lg border">
+            <Table>
+              <TableHeader>
+                {table.getHeaderGroups().map((headerGroup) => (
+                  <TableRow key={headerGroup.id}>
+                    {headerGroup.headers.map((header) => (
+                      <TableHead key={header.id}>
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(
+                              header.column.columnDef.header,
+                              header.getContext(),
+                            )}
+                      </TableHead>
+                    ))}
+                  </TableRow>
                 ))}
-              </TableRow>
-            ))}
-          </TableHeader>
-          <TableBody>
-            {table.getRowModel().rows.map((row) => (
-              <JobRow key={row.id} row={row} onEdit={setEditingJob} />
-            ))}
-          </TableBody>
-        </Table>
+              </TableHeader>
+              <TableBody>
+                {noMatches ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={columns.length}
+                      className="h-24 text-center text-sm text-muted-foreground"
+                    >
+                      No jobs match your filters.{" "}
+                      <button
+                        type="button"
+                        onClick={clearFilters}
+                        className="text-primary underline-offset-4 hover:underline"
+                      >
+                        Clear filters
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  rows.map((row) => (
+                    <JobRow key={row.id} row={row} onEdit={setEditingJob} />
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
       </div>
 
       {editingJob !== null ? (
