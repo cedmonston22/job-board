@@ -23,16 +23,16 @@ import { cn } from "@/lib/utils";
 //   - Up/Down arrows → navigate highlighted index
 //   - Enter → pick highlighted item
 //
-// Submits as a regular form field via a hidden <input> so the existing
-// useActionState formAction in SearchFilterSidebar still receives it.
+// Controlled component: the selected major lives in the parent (typically
+// derived from a URL param). `onChange` fires with the new major (or null
+// when cleared) so the parent can navigate / update state.
 
 type Props = {
-  name: string;
-  initialValue: string | null;
+  major: string | null;
+  onChange: (major: string | null) => void;
 };
 
-export function MajorCombobox({ name, initialValue }: Props) {
-  const [value, setValue] = useState<string | null>(initialValue);
+export function MajorCombobox({ major, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
@@ -80,8 +80,8 @@ export function MajorCombobox({ name, initialValue }: Props) {
     setOpen((o) => !o);
   }
 
-  function pick(major: string | null) {
-    setValue(major);
+  function pick(next: string | null) {
+    onChange(next);
     setOpen(false);
     setQuery("");
   }
@@ -112,11 +112,8 @@ export function MajorCombobox({ name, initialValue }: Props) {
 
   return (
     <div ref={containerRef} className="relative">
-      {/* Hidden input so the form's FormData picks up the selected value. */}
-      <input type="hidden" name={name} value={value ?? ""} />
-
       {/* Trigger button — matches the styling of the Base UI Select trigger
-          so the form looks consistent. */}
+          so the sidebar looks consistent. */}
       <button
         type="button"
         onClick={toggleOpen}
@@ -127,13 +124,13 @@ export function MajorCombobox({ name, initialValue }: Props) {
         <span
           className={cn(
             "truncate text-left",
-            !value && "text-muted-foreground",
+            !major && "text-muted-foreground",
           )}
         >
-          {value ?? "Pick a major"}
+          {major ?? "Pick a major"}
         </span>
         <div className="flex items-center gap-1">
-          {value ? (
+          {major ? (
             // Inline clear button. stopPropagation so clicking it doesn't
             // toggle the popover open/closed in the same click.
             <span
@@ -184,7 +181,7 @@ export function MajorCombobox({ name, initialValue }: Props) {
               <button
                 type="button"
                 role="option"
-                aria-selected={value === null}
+                aria-selected={major === null}
                 onMouseDown={(e) => {
                   // mousedown beats the click-outside listener that would
                   // otherwise close the popover before the click fires.
@@ -193,11 +190,11 @@ export function MajorCombobox({ name, initialValue }: Props) {
                 }}
                 className={cn(
                   "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left hover:bg-accent",
-                  value === null && "bg-accent/60",
+                  major === null && "bg-accent/60",
                 )}
               >
                 <span className="text-muted-foreground">None</span>
-                {value === null ? <CheckIcon className="size-3.5" /> : null}
+                {major === null ? <CheckIcon className="size-3.5" /> : null}
               </button>
             </li>
 
@@ -207,7 +204,7 @@ export function MajorCombobox({ name, initialValue }: Props) {
               </li>
             ) : (
               filtered.map((m, i) => {
-                const selected = m === value;
+                const selected = m === major;
                 const highlighted = i === highlight;
                 return (
                   <li key={m}>

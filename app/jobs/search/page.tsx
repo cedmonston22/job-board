@@ -27,7 +27,12 @@ const PAGE_SIZE = 50;
 export default async function JobSearchPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string; q?: string; sort?: string }>;
+  searchParams: Promise<{
+    page?: string;
+    q?: string;
+    sort?: string;
+    major?: string;
+  }>;
 }) {
   const session = await requireOnboarded();
   const user = session.user;
@@ -38,22 +43,16 @@ export default async function JobSearchPage({
   const q = params.q?.trim() ?? "";
   const sort: "newest" | "oldest" =
     params.sort === "oldest" ? "oldest" : "newest";
+  // Major filter is URL-driven (auto-applies on selection — no save button).
+  // Validate against MAJOR_KEYWORDS so a typo'd param is treated as "no
+  // filter" instead of an error.
+  const urlMajor = params.major?.trim();
+  const major: Major | null =
+    urlMajor && urlMajor in MAJOR_KEYWORDS ? (urlMajor as Major) : null;
 
-  // Load the user's saved filter first — we need its major/roles to build
-  // the where clause for the leads query.
-  const filter = await prisma.scrapeFilter.findUnique({
-    where: { userId: user.id },
-  });
-
-  // Translate the filter into a keyword list. Same precedence as the
-  // in-memory applyFilter (which still exists for the scrape runner):
-  // roles override the major umbrella.
-  const keywords: readonly string[] =
-    filter && filter.roles.length > 0
-      ? filter.roles
-      : filter?.major
-        ? (MAJOR_KEYWORDS[filter.major as Major] ?? [])
-        : [];
+  // Translate the URL major into a keyword list. ScrapeFilter table is kept
+  // for the daily scraper but no longer read here.
+  const keywords: readonly string[] = major ? MAJOR_KEYWORDS[major] : [];
 
   const cutoff = getStaleCutoff();
 
@@ -161,7 +160,6 @@ export default async function JobSearchPage({
         </div>
 
         <SearchView
-          filter={filter}
           leads={annotated}
           total={total}
           page={pageNum}
@@ -169,6 +167,7 @@ export default async function JobSearchPage({
           pageSize={PAGE_SIZE}
           q={q}
           sort={sort}
+          major={major}
         />
       </main>
     </div>

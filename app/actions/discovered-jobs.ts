@@ -6,7 +6,6 @@ import { after } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { scoreJobAndStore } from "@/lib/score-job";
-import { scrapeFilterInputSchema } from "@/lib/zod-schemas";
 
 // Same envelope used by every other mutation in the project — keeps the
 // `useActionState` rendering pattern uniform across the codebase.
@@ -20,49 +19,6 @@ async function requireUserId(): Promise<string> {
   const session = await auth();
   if (!session?.user?.id) redirect("/login");
   return session.user.id;
-}
-
-// ----- saveScrapeFilter -----
-// Upsert (one row per user — enforced by `@@unique` on userId). The form
-// sidebar binds this via useActionState.
-export async function saveScrapeFilter(
-  _prev: DiscoveredJobActionState | undefined,
-  formData: FormData,
-): Promise<DiscoveredJobActionState> {
-  const userId = await requireUserId();
-
-  // The MajorCombobox sends an empty string for the "No umbrella" option,
-  // which the Zod schema's emptyToUndefined preprocess turns into
-  // undefined → optional field skipped → DB column ends up null. No
-  // sentinel translation needed.
-  const parsed = scrapeFilterInputSchema.safeParse(
-    Object.fromEntries(formData),
-  );
-  if (!parsed.success) {
-    return {
-      ok: false,
-      fieldErrors: parsed.error.flatten().fieldErrors,
-    };
-  }
-
-  await prisma.scrapeFilter.upsert({
-    where: { userId },
-    create: {
-      userId,
-      major: parsed.data.major ?? null,
-      roles: parsed.data.roles,
-    },
-    update: {
-      major: parsed.data.major ?? null,
-      roles: parsed.data.roles,
-    },
-  });
-
-  // The search page applies the filter at read time, so revalidating it
-  // re-runs the filter against the live DiscoveredJob set without us
-  // needing to re-scrape.
-  revalidatePath("/jobs/search");
-  return { ok: true };
 }
 
 // ----- importDiscoveredJob -----

@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback } from "react";
-import type { ScrapeFilter } from "@/lib/generated/prisma/client";
+import type { Major } from "@/lib/major-keywords";
 import { SearchFilterSidebar } from "@/components/search/search-filter-sidebar";
 import {
   SearchTable,
@@ -14,13 +14,12 @@ import {
 // URL-driven controls in the children.
 //
 // All filter/sort/search/pagination state lives in the URL:
-//   ?page=N&q=foo&sort=newest
+//   ?page=N&q=foo&sort=newest&major=Computer+Science
 //
 // updateParam is a single helper passed down so each control can update
 // any param while resetting page to 1 (since changing a filter usually
 // invalidates the current page index).
 export function SearchView({
-  filter,
   leads,
   total,
   page,
@@ -28,8 +27,8 @@ export function SearchView({
   pageSize,
   q,
   sort,
+  major,
 }: {
-  filter: ScrapeFilter | null;
   leads: LeadWithStatus[];
   total: number;
   page: number;
@@ -37,6 +36,7 @@ export function SearchView({
   pageSize: number;
   q: string;
   sort: "newest" | "oldest";
+  major: Major | null;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -61,16 +61,15 @@ export function SearchView({
     [router, pathname, searchParams],
   );
 
-  // Counts shown in the sidebar header — "Showing N of M leads." With
-  // server-pagination we can compute both straight from props.
   return (
     <div className="flex flex-col gap-4 md:flex-row">
       <SearchFilterSidebar
-        filter={filter}
         totalLeads={total}
         shownLeads={leads.length}
         sortBy={sort}
         onSortByChange={(v) => updateParam("sort", v === "newest" ? null : v)}
+        major={major}
+        onMajorChange={(v) => updateParam("major", v)}
       />
       <SearchTable
         leads={leads}
