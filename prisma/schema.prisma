@@ -24,6 +24,7 @@ model User {
   accounts Account[]
   sessions Session[]
   jobs     Job[]
+  resume   Resume?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -123,6 +124,25 @@ model Job {
   @@unique([userId, source, sourceId])
   // Fast lookup for "all of my SAVED jobs" / "all of my APPLIED jobs".
   @@index([userId, status])
+}
+
+// The user's uploaded resume. One per user (enforced by @unique on userId).
+// File bytes live in Vercel Blob; only the URL + metadata sit in Postgres.
+// `parsedJson` will be filled in step 2.4 once Groq parsing is wired up.
+model Resume {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  fileUrl      String // public Vercel Blob URL
+  fileName     String // original filename, e.g. "alex-resume.pdf"
+  fileMimeType String // application/pdf | application/vnd...wordprocessingml.document | text/plain
+  fileSize     Int // bytes
+
+  parsedJson Json? // populated in step 2.4
+
+  uploadedAt DateTime  @default(now())
+  parsedAt   DateTime?
 }
 
 // People you might reach out to for a given job. Manual entries for now —

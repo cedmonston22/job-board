@@ -1,14 +1,9 @@
 import { redirect } from "next/navigation";
-import { auth, signOut } from "@/auth";
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { Button } from "@/components/ui/button";
+import { Header } from "@/components/header";
 import { AddJobButton } from "@/components/jobs/job-sheet";
 import { JobsTable } from "@/components/jobs/jobs-table";
-
-async function handleSignOut() {
-  "use server";
-  await signOut({ redirectTo: "/login" });
-}
 
 export default async function Home() {
   // Auth gate: every code path below assumes a logged-in user.
@@ -25,17 +20,7 @@ export default async function Home() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <header className="flex items-center justify-between border-b px-6 py-3">
-        <h1 className="text-lg font-semibold">Job Board</h1>
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-muted-foreground">{session.user.email}</span>
-          <form action={handleSignOut}>
-            <Button type="submit" variant="outline" size="sm">
-              Sign out
-            </Button>
-          </form>
-        </div>
-      </header>
+      <Header user={session.user} />
 
       <main className="flex-1 p-6">
         <div className="mb-4 flex items-center justify-between">

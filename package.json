@@ -16,6 +16,7 @@
     "@prisma/adapter-neon": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "@tanstack/react-table": "^8.21.3",
+    "@vercel/blob": "^2.3.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "groq-sdk": "^1.2.0",
