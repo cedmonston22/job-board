@@ -85,3 +85,22 @@ export const parsedJobSchema = z.object({
 });
 
 export type ParsedJob = z.infer<typeof parsedJobSchema>;
+
+// What a valid contact submission looks like. `name` is required — everything
+// else is optional and goes through the same empty-string-to-undefined dance
+// as the job form fields.
+export const contactInputSchema = z.object({
+  name: z.string().min(1, "Name is required").max(100),
+  role: z.preprocess(emptyToUndefined, z.string().max(100).optional()),
+  linkedinUrl: z.preprocess(
+    emptyToUndefined,
+    z.url("Must be a valid URL").optional(),
+  ),
+  email: z.preprocess(
+    emptyToUndefined,
+    z.email("Must be a valid email").optional(),
+  ),
+  notes: z.preprocess(emptyToUndefined, z.string().max(2000).optional()),
+});
+
+export type ContactInput = z.infer<typeof contactInputSchema>;

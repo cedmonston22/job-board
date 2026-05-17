@@ -13,10 +13,17 @@ import {
 import {
   ChevronDownIcon,
   ChevronRightIcon,
+  PencilIcon,
   Trash2Icon,
 } from "lucide-react";
 import { deleteJob, updateJobStatus } from "@/app/actions/jobs";
-import type { Job, JobStatus } from "@/lib/generated/prisma/client";
+import type { Contact, Job, JobStatus } from "@/lib/generated/prisma/client";
+import { ContactsSection } from "@/components/jobs/contacts-section";
+import { JobSheet } from "@/components/jobs/job-sheet";
+
+// Job augmented with its contacts. The page query includes them; this type
+// flows through the table to the detail panel.
+export type JobWithContacts = Job & { contacts: Contact[] };
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -67,8 +74,17 @@ function StatusSelect({
 
 // The expanded panel below a row. Takes `status` as a prop (rather than reading
 // from `job.status`) so the displayed value matches the dropdown's optimistic
-// state — both come from the same useOptimistic hook on JobRow.
-function JobRowDetail({ job, status }: { job: Job; status: JobStatus }) {
+// state — both come from the same useOptimistic hook on JobRow. The `onEdit`
+// callback is wired by JobsTable to open the shared <JobSheet> in edit mode.
+function JobRowDetail({
+  job,
+  status,
+  onEdit,
+}: {
+  job: JobWithContacts;
+  status: JobStatus;
+  onEdit: () => void;
+}) {
   return (
     <div className="grid gap-4 bg-muted/30 p-4 text-sm">
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -106,12 +122,7 @@ function JobRowDetail({ job, status }: { job: Job; status: JobStatus }) {
         </div>
       ) : null}
 
-      {job.description ? (
-        <div>
-          <div className="mb-1 text-muted-foreground">Description</div>
-          <p className="whitespace-pre-wrap">{job.description}</p>
-        </div>
-      ) : null}
+      {job.description ? <DescriptionDisclosure text={job.description} /> : null}
 
       {job.notes ? (
         <div>
@@ -120,13 +131,48 @@ function JobRowDetail({ job, status }: { job: Job; status: JobStatus }) {
         </div>
       ) : null}
 
-      <div className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
-        Contacts & outreach coming in Phase 6.
-      </div>
+      <ContactsSection
+        jobId={job.id}
+        company={job.company}
+        contacts={job.contacts}
+      />
 
-      <div className="flex justify-end border-t pt-3">
+      <div className="flex justify-end gap-2 border-t pt-3">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onEdit}
+          className="gap-1"
+        >
+          <PencilIcon className="size-4" />
+          Edit
+        </Button>
         <DeleteJobButton jobId={job.id} />
       </div>
+    </div>
+  );
+}
+
+// Description is heavy text — usually only consulted when needed, so we hide
+// it behind a one-click disclosure. The text still lives in the DB (Phase 4/5
+// AI features depend on it); the panel just doesn't dump it visually by default.
+function DescriptionDisclosure({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+      >
+        {open ? "Hide description" : "Show description"}
+      </button>
+      {open ? (
+        <p className="mt-2 whitespace-pre-wrap rounded-md bg-background/50 p-3 text-sm">
+          {text}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -243,7 +289,7 @@ function formatDate(d: Date): string {
 // Status column has no `cell` defined here — JobRow intercepts it so the
 // dropdown reads the per-row optimistic state. The header still uses this
 // definition.
-const columns: ColumnDef<Job>[] = [
+const columns: ColumnDef<JobWithContacts>[] = [
   {
     accessorKey: "company",
     header: "Company",
@@ -311,7 +357,13 @@ const columns: ColumnDef<Job>[] = [
 // dropdown (in the cell row) and the Status field (in the expanded detail
 // panel) read from the same useOptimistic hook, so a status change reflects
 // instantly in both places — no waiting for revalidatePath.
-function JobRow({ row }: { row: Row<Job> }) {
+function JobRow({
+  row,
+  onEdit,
+}: {
+  row: Row<JobWithContacts>;
+  onEdit: (job: JobWithContacts) => void;
+}) {
   const job = row.original;
   const [optimisticStatus, setOptimisticStatus] = useOptimistic(job.status);
   const [, startTransition] = useTransition();
@@ -347,7 +399,11 @@ function JobRow({ row }: { row: Row<Job> }) {
       {row.getIsExpanded() ? (
         <TableRow>
           <TableCell colSpan={cells.length} className="p-0">
-            <JobRowDetail job={job} status={optimisticStatus} />
+            <JobRowDetail
+              job={job}
+              status={optimisticStatus}
+              onEdit={() => onEdit(job)}
+            />
           </TableCell>
         </TableRow>
       ) : null}
@@ -359,8 +415,14 @@ function JobRow({ row }: { row: Row<Job> }) {
 // Table
 // ============================================================================
 
-export function JobsTable({ jobs }: { jobs: Job[] }) {
+export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
   const [expanded, setExpanded] = useState<ExpandedState>({});
+
+  // Which job is being edited (if any). Kept at the table level so we render a
+  // single shared <JobSheet>. The `key` prop on the sheet (job.id when editing)
+  // forces a fresh mount per edit session so prefill defaults pick up the new
+  // row's values.
+  const [editingJob, setEditingJob] = useState<JobWithContacts | null>(null);
 
   const table = useReactTable({
     data: jobs,
@@ -373,30 +435,43 @@ export function JobsTable({ jobs }: { jobs: Job[] }) {
   });
 
   return (
-    <div className="rounded-lg border">
-      <Table>
-        <TableHeader>
-          {table.getHeaderGroups().map((headerGroup) => (
-            <TableRow key={headerGroup.id}>
-              {headerGroup.headers.map((header) => (
-                <TableHead key={header.id}>
-                  {header.isPlaceholder
-                    ? null
-                    : flexRender(
-                        header.column.columnDef.header,
-                        header.getContext(),
-                      )}
-                </TableHead>
-              ))}
-            </TableRow>
-          ))}
-        </TableHeader>
-        <TableBody>
-          {table.getRowModel().rows.map((row) => (
-            <JobRow key={row.id} row={row} />
-          ))}
-        </TableBody>
-      </Table>
-    </div>
+    <>
+      <div className="rounded-lg border">
+        <Table>
+          <TableHeader>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <TableRow key={headerGroup.id}>
+                {headerGroup.headers.map((header) => (
+                  <TableHead key={header.id}>
+                    {header.isPlaceholder
+                      ? null
+                      : flexRender(
+                          header.column.columnDef.header,
+                          header.getContext(),
+                        )}
+                  </TableHead>
+                ))}
+              </TableRow>
+            ))}
+          </TableHeader>
+          <TableBody>
+            {table.getRowModel().rows.map((row) => (
+              <JobRow key={row.id} row={row} onEdit={setEditingJob} />
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+
+      {editingJob !== null ? (
+        <JobSheet
+          key={editingJob.id}
+          job={editingJob}
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) setEditingJob(null);
+          }}
+        />
+      ) : null}
+    </>
   );
 }

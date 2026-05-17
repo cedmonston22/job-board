@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { auth, signOut } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { Button } from "@/components/ui/button";
-import { AddJobSheet } from "@/components/jobs/add-job-sheet";
+import { AddJobButton } from "@/components/jobs/job-sheet";
 import { JobsTable } from "@/components/jobs/jobs-table";
 
 async function handleSignOut() {
@@ -20,6 +20,7 @@ export default async function Home() {
   const jobs = await prisma.job.findMany({
     where: { userId: session.user.id },
     orderBy: { updatedAt: "desc" },
+    include: { contacts: { orderBy: { createdAt: "asc" } } },
   });
 
   return (
@@ -42,7 +43,7 @@ export default async function Home() {
             Your jobs{" "}
             <span className="text-muted-foreground">({jobs.length})</span>
           </h2>
-          <AddJobSheet />
+          <AddJobButton />
         </div>
 
         {jobs.length === 0 ? <EmptyState /> : <JobsTable jobs={jobs} />}

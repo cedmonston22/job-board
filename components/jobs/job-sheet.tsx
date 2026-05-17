@@ -1,13 +1,21 @@
 "use client";
 
-import { useActionState, useEffect, useState, useTransition } from "react";
+import {
+  type ReactNode,
+  useActionState,
+  useEffect,
+  useState,
+  useTransition,
+} from "react";
 import { PlusIcon, SparklesIcon } from "lucide-react";
 import {
   createJob,
   parseJobFromUrl,
+  updateJob,
   type JobActionState,
 } from "@/app/actions/jobs";
 import type { ParsedJob } from "@/lib/zod-schemas";
+import type { Job, JobStatus } from "@/lib/generated/prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,24 +35,47 @@ import {
   SheetFooter,
   SheetHeader,
   SheetTitle,
-  SheetTrigger,
 } from "@/components/ui/sheet";
 
-// Small helper: render the per-field validation messages we get back from the
-// server action's Zod validation. Empty arrays render nothing.
+// ============================================================================
+// Types & helpers
+// ============================================================================
+
 function FieldError({ errors }: { errors?: string[] }) {
   if (!errors?.length) return null;
   return <p className="text-xs text-destructive">{errors[0]}</p>;
 }
 
-// Shape we use to prefill the form after a successful URL autofill. Extends
-// ParsedJob (from Groq/JSON-LD) with the URL the user typed — the parser
-// doesn't return that since we already know it client-side.
-type FormPrefill = ParsedJob & { url: string };
+// Shape used to seed form defaults. Covers both autofill (creates a fresh row)
+// and edit (loads from an existing row). The two extra optional fields below
+// the ParsedJob ones are only populated in edit mode.
+type FormPrefill = ParsedJob & {
+  url: string;
+  status?: JobStatus;
+  notes?: string | null;
+};
 
-// Build the FormData that createJob expects from a parsed prefill. Used for the
-// auto-save path in link mode — we skip the form's DOM serialization entirely
-// and submit programmatically.
+// Convert an existing Job row into the FormPrefill shape so we can seed
+// defaultValue on each input in edit mode.
+function jobToPrefill(job: Job): FormPrefill {
+  return {
+    title: job.title,
+    company: job.company,
+    location: job.location,
+    // remoteType is `string | null` in the DB but should always be one of the
+    // three known values when it's non-null (the Select restricts input).
+    remoteType: job.remoteType as ParsedJob["remoteType"],
+    salaryMin: job.salaryMin,
+    salaryMax: job.salaryMax,
+    description: job.description,
+    url: job.url ?? "",
+    status: job.status,
+    notes: job.notes,
+  };
+}
+
+// Build a FormData for the auto-save path (link mode, parse succeeded with
+// title + company). Only used in create mode.
 function prefillToFormData(prefill: FormPrefill): FormData {
   const fd = new FormData();
   if (prefill.title) fd.set("title", prefill.title);
@@ -59,43 +90,62 @@ function prefillToFormData(prefill: FormPrefill): FormData {
   return fd;
 }
 
-export function AddJobSheet() {
-  // Sheet open/closed. Controlled so we can close it after a successful save.
-  const [open, setOpen] = useState(false);
+// ============================================================================
+// JobSheet (controlled, polymorphic)
+// ============================================================================
 
-  // "link" mode shows just the URL panel + Add button (the default — minimal UI).
-  // "manual" mode reveals the full form for typing or fixing autofill misses.
-  const [mode, setMode] = useState<"link" | "manual">("link");
+// One sheet component for both create and edit:
+//   - No `job` prop  → create mode: link-first autofill + full form fallback
+//   - `job` provided → edit mode: full form prefilled with the row's values,
+//                      no URL autofill panel (you're editing an existing row,
+//                      not adding a fresh one)
+//
+// Controlled via `open` / `onOpenChange` so the table can drive it externally.
+// `trigger` is an optional ReactNode rendered inside <SheetTrigger> — pass it
+// for the "+ Add job" header button; omit it when controlling from outside.
+export function JobSheet({
+  job,
+  open,
+  onOpenChange,
+}: {
+  job?: Job;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const isEdit = job !== undefined;
 
-  // Autofill state. urlInput is what the user has typed; prefill holds the
-  // parsed result; prefillKey bumps to force a form remount so defaultValues
-  // pick up new prefill data; autofillPending/autofillError track the
-  // parseJobFromUrl call.
+  // In edit mode we bind the job id into updateJob's first arg, leaving a
+  // (prev, formData) signature that matches useActionState's expectations.
+  const action = isEdit ? updateJob.bind(null, job.id) : createJob;
+
+  const [state, formAction, pending] = useActionState<
+    JobActionState | undefined,
+    FormData
+  >(action, undefined);
+
+  const [, startTransition] = useTransition();
+
+  // Edit mode always starts in "manual" (full form). Create mode starts in
+  // "link" (URL autofill panel only) and may flip to "manual" via the
+  // "Add manually instead" link or on a partial autofill result.
+  const [mode, setMode] = useState<"link" | "manual">(
+    isEdit ? "manual" : "link",
+  );
+
   const [urlInput, setUrlInput] = useState("");
-  const [prefill, setPrefill] = useState<FormPrefill | null>(null);
+  const [prefill, setPrefill] = useState<FormPrefill | null>(
+    isEdit ? jobToPrefill(job) : null,
+  );
   const [prefillKey, setPrefillKey] = useState(0);
   const [autofillPending, setAutofillPending] = useState(false);
   const [autofillError, setAutofillError] = useState<string | null>(null);
 
-  // useActionState wires the createJob server action to React's render cycle.
-  // We call formAction(formData) directly for the auto-save path; in manual
-  // mode the <form action={formAction}> wiring handles it.
-  const [state, formAction, pending] = useActionState<
-    JobActionState | undefined,
-    FormData
-  >(createJob, undefined);
-
-  // useActionState's formAction wants to run inside a transition. When wired
-  // via <form action={formAction}> React handles that automatically. For our
-  // auto-save path we call formAction directly, so we provide the transition
-  // ourselves via startTransition.
-  const [, startTransition] = useTransition();
-
-  // On successful save, close + reset.
+  // On successful save, close the sheet. In create mode we also reset internal
+  // state so the next open starts fresh; in edit mode the parent unmounts us.
   useEffect(() => {
     if (state?.ok) {
-      setOpen(false);
-      resetSheet();
+      onOpenChange(false);
+      if (!isEdit) resetSheet();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
@@ -108,14 +158,12 @@ export function AddJobSheet() {
   }
 
   function handleOpenChange(next: boolean) {
-    setOpen(next);
-    if (!next) resetSheet();
+    onOpenChange(next);
+    if (!next && !isEdit) resetSheet();
   }
 
-  // Link-mode "Add" handler. Parses the URL, then:
-  //   - If we got title + company → auto-save (one-click flow).
-  //   - If we got partial data → switch to manual mode with prefilled values.
-  //   - If the parse errored → show the error inline + offer manual entry.
+  // ============== create-mode handlers (not used in edit mode) ==============
+
   async function handleAddFromLink() {
     const trimmed = urlInput.trim();
     if (!trimmed) return;
@@ -132,16 +180,12 @@ export function AddJobSheet() {
     const next: FormPrefill = { ...result.data, url: trimmed };
 
     if (result.data.title && result.data.company) {
-      // Have everything required — auto-save without showing the full form.
-      // Wrapped in startTransition so `pending` from useActionState flips
-      // correctly (React would otherwise warn).
       startTransition(() => {
         formAction(prefillToFormData(next));
       });
       return;
     }
 
-    // Partial result — drop into manual mode with whatever we got.
     setPrefill(next);
     setPrefillKey((k) => k + 1);
     setMode("manual");
@@ -150,8 +194,6 @@ export function AddJobSheet() {
     );
   }
 
-  // Manual-mode "Autofill" button. Same parse, but never auto-saves — the user
-  // is already in the form view and can review/edit.
   async function handleAutofillManual() {
     const trimmed = urlInput.trim();
     if (!trimmed) return;
@@ -171,14 +213,6 @@ export function AddJobSheet() {
 
   return (
     <Sheet open={open} onOpenChange={handleOpenChange}>
-      <SheetTrigger
-        render={
-          <Button>
-            <PlusIcon />
-            Add job
-          </Button>
-        }
-      />
       <SheetContent className="flex w-full flex-col gap-0 sm:max-w-md">
         <form
           key={prefillKey}
@@ -186,68 +220,68 @@ export function AddJobSheet() {
           className="flex h-full flex-col"
         >
           <SheetHeader>
-            <SheetTitle>Add a job</SheetTitle>
+            <SheetTitle>{isEdit ? "Edit job" : "Add a job"}</SheetTitle>
             <SheetDescription>
-              {mode === "link"
-                ? "Paste a job posting link — we'll handle the rest."
-                : "Fill in the details and save."}
+              {isEdit
+                ? "Update any field — save when you're done."
+                : mode === "link"
+                  ? "Paste a job posting link — we'll handle the rest."
+                  : "Fill in the details and save."}
             </SheetDescription>
           </SheetHeader>
 
           <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-            {/* URL panel — visible in both modes. In link mode, hitting Enter
-                or clicking Add does the parse+save. In manual mode it just
-                prefills the existing form fields. */}
-            <div className="grid gap-1.5 rounded-lg border bg-muted/30 p-3">
-              <Label htmlFor="autofill-url" className="text-xs font-medium">
-                Job posting URL
-              </Label>
-              <div className="flex gap-2">
-                <Input
-                  id="autofill-url"
-                  type="url"
-                  placeholder="https://jobs.lever.co/..."
-                  value={urlInput}
-                  onChange={(e) => setUrlInput(e.target.value)}
-                  disabled={busy}
-                  onKeyDown={(e) => {
-                    // Pressing Enter in the URL field shouldn't submit the
-                    // (potentially empty) form — it should trigger our parse.
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (mode === "link") void handleAddFromLink();
-                      else void handleAutofillManual();
-                    }
-                  }}
-                />
-                {mode === "link" ? (
-                  <Button
-                    type="button"
-                    onClick={handleAddFromLink}
-                    disabled={busy || !urlInput.trim()}
-                  >
-                    <SparklesIcon />
-                    {busy ? "Adding…" : "Add"}
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleAutofillManual}
-                    disabled={busy || !urlInput.trim()}
-                  >
-                    <SparklesIcon />
-                    {autofillPending ? "Parsing…" : "Autofill"}
-                  </Button>
-                )}
+            {/* URL autofill panel — create mode only. */}
+            {!isEdit ? (
+              <div className="grid gap-1.5 rounded-lg border bg-muted/30 p-3">
+                <Label htmlFor="autofill-url" className="text-xs font-medium">
+                  Job posting URL
+                </Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="autofill-url"
+                    type="url"
+                    placeholder="https://jobs.lever.co/..."
+                    value={urlInput}
+                    onChange={(e) => setUrlInput(e.target.value)}
+                    disabled={busy}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        if (mode === "link") void handleAddFromLink();
+                        else void handleAutofillManual();
+                      }
+                    }}
+                  />
+                  {mode === "link" ? (
+                    <Button
+                      type="button"
+                      onClick={handleAddFromLink}
+                      disabled={busy || !urlInput.trim()}
+                    >
+                      <SparklesIcon />
+                      {busy ? "Adding…" : "Add"}
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleAutofillManual}
+                      disabled={busy || !urlInput.trim()}
+                    >
+                      <SparklesIcon />
+                      {autofillPending ? "Parsing…" : "Autofill"}
+                    </Button>
+                  )}
+                </div>
+                {autofillError ? (
+                  <p className="text-xs text-destructive">{autofillError}</p>
+                ) : null}
               </div>
-              {autofillError ? (
-                <p className="text-xs text-destructive">{autofillError}</p>
-              ) : null}
-            </div>
+            ) : null}
 
-            {/* Link-mode footer: a way out to manual entry. */}
-            {mode === "link" ? (
+            {/* Link-mode footer: a way out to manual entry. Create mode only. */}
+            {!isEdit && mode === "link" ? (
               <button
                 type="button"
                 onClick={() => setMode("manual")}
@@ -257,10 +291,9 @@ export function AddJobSheet() {
               </button>
             ) : null}
 
-            {/* Manual mode: the full form fields. */}
+            {/* Manual mode (or edit mode): the full form fields. */}
             {mode === "manual" ? (
               <>
-                {/* Title */}
                 <div className="grid gap-1.5">
                   <Label htmlFor="title">Title</Label>
                   <Input
@@ -274,7 +307,6 @@ export function AddJobSheet() {
                   <FieldError errors={state?.fieldErrors?.title} />
                 </div>
 
-                {/* Company */}
                 <div className="grid gap-1.5">
                   <Label htmlFor="company">Company</Label>
                   <Input
@@ -288,10 +320,12 @@ export function AddJobSheet() {
                   <FieldError errors={state?.fieldErrors?.company} />
                 </div>
 
-                {/* Status */}
                 <div className="grid gap-1.5">
                   <Label htmlFor="status">Status</Label>
-                  <Select name="status" defaultValue="SAVED">
+                  <Select
+                    name="status"
+                    defaultValue={prefill?.status ?? "SAVED"}
+                  >
                     <SelectTrigger id="status" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
@@ -304,7 +338,6 @@ export function AddJobSheet() {
                   <FieldError errors={state?.fieldErrors?.status} />
                 </div>
 
-                {/* Location + Remote type */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
                     <Label htmlFor="location">Location</Label>
@@ -335,7 +368,6 @@ export function AddJobSheet() {
                   </div>
                 </div>
 
-                {/* Salary range */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="grid gap-1.5">
                     <Label htmlFor="salaryMin">Salary min</Label>
@@ -363,7 +395,6 @@ export function AddJobSheet() {
                   </div>
                 </div>
 
-                {/* Saved URL (separate from the autofill input above). */}
                 <div className="grid gap-1.5">
                   <Label htmlFor="url">Saved URL</Label>
                   <Input
@@ -376,21 +407,18 @@ export function AddJobSheet() {
                   <FieldError errors={state?.fieldErrors?.url} />
                 </div>
 
-                {/* Description — autofilled by the parser. */}
-                <div className="grid gap-1.5">
-                  <Label htmlFor="description">Description</Label>
-                  <Textarea
-                    id="description"
+                {/* Description is autofill-only — not user-editable in the
+                    form. It still gets sent to the server via a hidden input
+                    so edits preserve the autofilled text, but Phase 4/5 AI
+                    features remain the source of truth for what's in there. */}
+                {prefill?.description ? (
+                  <input
+                    type="hidden"
                     name="description"
-                    placeholder="What the role involves..."
-                    rows={4}
-                    maxLength={20000}
-                    defaultValue={prefill?.description ?? ""}
+                    value={prefill.description}
                   />
-                  <FieldError errors={state?.fieldErrors?.description} />
-                </div>
+                ) : null}
 
-                {/* Notes — your private notes, never autofilled. */}
                 <div className="grid gap-1.5">
                   <Label htmlFor="notes">Notes</Label>
                   <Textarea
@@ -399,6 +427,7 @@ export function AddJobSheet() {
                     placeholder="Recruiter Alex reached out on LinkedIn..."
                     rows={3}
                     maxLength={5000}
+                    defaultValue={prefill?.notes ?? ""}
                   />
                   <FieldError errors={state?.fieldErrors?.notes} />
                 </div>
@@ -418,9 +447,11 @@ export function AddJobSheet() {
                 </Button>
               }
             />
+            {/* Save button shows whenever the manual form is visible (i.e.,
+                always in edit mode, and after switching to manual in create). */}
             {mode === "manual" ? (
               <Button type="submit" disabled={busy}>
-                {pending ? "Saving…" : "Save"}
+                {pending ? "Saving…" : isEdit ? "Save changes" : "Save"}
               </Button>
             ) : null}
           </SheetFooter>
@@ -429,3 +460,26 @@ export function AddJobSheet() {
     </Sheet>
   );
 }
+
+// ============================================================================
+// AddJobButton — thin wrapper for the "+ Add job" header trigger
+// ============================================================================
+
+// Owns its own open state. Renders the trigger button + a JobSheet underneath
+// that's in create mode (no `job` prop).
+export function AddJobButton() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button onClick={() => setOpen(true)}>
+        <PlusIcon />
+        Add job
+      </Button>
+      <JobSheet open={open} onOpenChange={setOpen} />
+    </>
+  );
+}
+
+// Re-export trigger node type for callers that want to use the standalone
+// trigger pattern (currently unused but cheap to expose).
+export type { ReactNode };

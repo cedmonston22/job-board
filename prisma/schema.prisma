@@ -115,10 +115,31 @@ model Job {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  contacts Contact[]
+
   // Prevents the scraper from creating duplicate rows for the same posting.
   // Postgres treats NULLs as distinct, so multiple manual entries with
   // source = null are still allowed.
   @@unique([userId, source, sourceId])
   // Fast lookup for "all of my SAVED jobs" / "all of my APPLIED jobs".
   @@index([userId, status])
+}
+
+// People you might reach out to for a given job. Manual entries for now —
+// Phase 6 will (maybe) add deep-link-driven discovery from LinkedIn searches.
+model Contact {
+  id    String @id @default(cuid())
+  jobId String
+  job   Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  name        String
+  role        String? // their job title at the company
+  linkedinUrl String?
+  email       String?
+  notes       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([jobId])
 }
