@@ -3,16 +3,24 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { COMPANY_LOGOS } from "@/components/landing/company-logos";
 
-// Per-brand instance count. With 8 brands × 4 each = 32 drifting pairs across
-// the viewport. Bumping this lifts density (and per-instance overhead).
-const PER_BRAND = 4;
-
-// Upper and lower bands the logos drift through. The gap between them is the
-// dead-center region reserved for the sign-in card.
+// Two non-overlapping horizontal bands — upper drifts left→right, lower
+// drifts right→left. Because the bands don't share vertical space, an
+// instance in the upper band can never collide with one in the lower band.
 const BANDS = [
-  { top: 3, height: 33 },
-  { top: 62, height: 33 },
+  { top: 3, height: 36, direction: "lr" as const },
+  { top: 61, height: 36, direction: "rl" as const },
 ];
+
+// Lanes per band. Each band holds exactly LANES_PER_BAND instances, with each
+// instance at a unique lane AND a unique evenly-spaced phase along the
+// animation loop. That combination guarantees no two instances in the same
+// band can occupy the same (x, y) at the same time.
+const LANES_PER_BAND = 10;
+
+// Single shared duration. Variable durations would cause phase drift between
+// instances and re-introduce occasional clumping. Fixed duration is the only
+// way to keep the cross-instance phase spacing exactly constant forever.
+const DURATION_SEC = 45;
 
 type Instance = {
   key: number;
@@ -36,48 +44,46 @@ function shuffle<T>(arr: T[]): T[] {
 
 function buildInstances(): Instance[] {
   const brandCount = COMPANY_LOGOS.length;
-  const total = brandCount * PER_BRAND;
+  const instances: Instance[] = [];
+  let key = 0;
 
-  // Pre-compute evenly spaced vertical lane slots across both bands, then
-  // shuffle. Dealing one slot per instance guarantees no two instances share
-  // a lane and means same-brand instances scatter across the whole vertical
-  // range instead of clumping in one band.
-  const lanesPerBand = Math.ceil(total / BANDS.length);
-  const slotDeck: number[] = [];
   for (const band of BANDS) {
-    for (let lane = 0; lane < lanesPerBand; lane++) {
-      if (slotDeck.length >= total) break;
+    // Every brand appears at least once per band. When LANES_PER_BAND >
+    // brandCount, fill the remaining slots with a random subset of brands
+    // (no brand picked twice as an "extra"), then shuffle the full lane
+    // assignment so the two rows aren't mirrors of each other.
+    const base = shuffle(Array.from({ length: brandCount }, (_, n) => n));
+    const extras = shuffle(
+      Array.from({ length: brandCount }, (_, n) => n),
+    ).slice(0, Math.max(0, LANES_PER_BAND - brandCount));
+    const brandOrder = shuffle([...base, ...extras]);
+
+    for (let lane = 0; lane < LANES_PER_BAND; lane++) {
+      // Evenly-spaced vertical lane within the band. Tiny jitter so the
+      // layout doesn't look ruler-perfect, kept small enough to never
+      // close the gap to the neighboring lane.
       const topPct =
         band.top +
-        (lane / Math.max(1, lanesPerBand - 1)) * band.height +
-        (Math.random() - 0.5) * 3; // small jitter so lanes don't look ruled
-      slotDeck.push(topPct);
+        (lane / (LANES_PER_BAND - 1)) * band.height +
+        (Math.random() - 0.5) * 1.2;
+
+      // Evenly-spaced phase along the animation loop. With 8 lanes and a
+      // 45s cycle, each instance starts 5.625s ahead of the next — at any
+      // frame they're at 8 distinct x positions across the viewport.
+      const phase = (lane / LANES_PER_BAND) * DURATION_SEC;
+
+      instances.push({
+        key: key++,
+        logoIndex: brandOrder[lane],
+        topPct,
+        size: 24 + Math.floor(Math.random() * 6), // 24–29 px (tighter so
+        // even the widest wordmark fits inside one phase slot at desktop)
+        duration: DURATION_SEC,
+        delay: -phase,
+        opacity: 0.3 + Math.random() * 0.12,
+        direction: band.direction,
+      });
     }
-  }
-  const slots = shuffle(slotDeck);
-
-  const instances: Instance[] = [];
-  for (let i = 0; i < total; i++) {
-    // Brands cycle every step so consecutive instances are always different.
-    const logoIndex = i % brandCount;
-    const instanceOfBrand = Math.floor(i / brandCount); // 0…PER_BRAND-1
-    const duration = 36 + Math.random() * 14; // 36–50s
-    // Same-brand instances get phases evenly distributed across the loop:
-    // with 4 per brand they're 25%, 50%, 75% out of phase, so at any moment
-    // they sit at four different horizontal positions — no temporal clumping.
-    const phase =
-      (instanceOfBrand / PER_BRAND) * duration + Math.random() * 4;
-
-    instances.push({
-      key: i,
-      logoIndex,
-      topPct: slots[i],
-      size: 22 + Math.floor(Math.random() * 14),
-      duration,
-      delay: -phase,
-      opacity: 0.28 + Math.random() * 0.14,
-      direction: i % 2 === 0 ? "lr" : "rl",
-    });
   }
 
   return instances;
@@ -133,8 +139,11 @@ export function LandingBackground() {
         const { name, Svg, brandColor, wordmarkOnly } =
           COMPANY_LOGOS[inst.logoIndex];
         // Wordmark SVGs already include the name as part of the artwork,
-        // so we render them at ~2× the size and skip the separate label.
-        const svgHeight = wordmarkOnly ? inst.size * 1.6 : inst.size;
+        // so we skip the separate label. Scale ~1.2× the icon size so
+        // even the widest wordmark (ZipRecruiter, ~4.5:1 aspect) fits
+        // inside one phase-slot of horizontal space (≈13vw at 10 lanes)
+        // and never overlaps the next instance in its lane.
+        const svgHeight = wordmarkOnly ? inst.size * 1.2 : inst.size;
         const fontSize = Math.round(inst.size * 0.55);
 
         const content = (

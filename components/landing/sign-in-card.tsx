@@ -29,7 +29,7 @@ export function SignInCard({ className }: { className?: string }) {
       </div>
 
       <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
-        Track every job in one place.
+        Find and track every job in one place.
       </h1>
       <p className="mt-2 text-sm leading-relaxed text-zinc-600">
         Pulled-in postings, AI fit scores, and contacts. Yours and only yours.
@@ -61,10 +61,6 @@ export function SignInCard({ className }: { className?: string }) {
           Continue with Google
         </button>
       </form>
-
-      <p className="mt-5 text-center text-[11px] leading-relaxed text-zinc-500">
-        Personal project. Your data stays in your account.
-      </p>
     </div>
   );
 }
