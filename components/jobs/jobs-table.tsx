@@ -507,8 +507,7 @@ function SearchBar({
 // JobsTable owner and the sidebar speak the same language.
 export type SidebarFilters = {
   status: "ALL" | JobStatus;
-  company: string; // "ALL" or a specific company name
-  roleSort: "DEFAULT" | "ASC" | "DESC";
+  dateSort: "DEFAULT" | "DESC" | "ASC"; // DESC = newest first (recent createdAt), ASC = oldest first
   matchSort: "DEFAULT" | "DESC" | "ASC"; // DESC = highest first, ASC = lowest first
 };
 
@@ -535,7 +534,6 @@ function FiltersSidebar({
   filters,
   onChange,
   statusCounts,
-  companies,
 }: {
   filters: SidebarFilters;
   onChange: (next: SidebarFilters) => void;
@@ -545,7 +543,6 @@ function FiltersSidebar({
     APPLIED: number;
     REJECTED: number;
   };
-  companies: string[];
 }) {
   // Each handler builds a fresh SidebarFilters object so the parent can replace
   // its single state value in one setState call.
@@ -585,34 +582,13 @@ function FiltersSidebar({
           </Select>
         </SidebarSection>
 
-        {/* Company */}
-        <SidebarSection label="Company">
+        {/* Date Added — sorts on Job.createdAt (when the row was added
+            to My Jobs). DESC = newest first, ASC = oldest first. */}
+        <SidebarSection label="Date Added">
           <Select
-            value={filters.company}
+            value={filters.dateSort}
             onValueChange={(v) => {
-              if (v) set("company", v);
-            }}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All companies</SelectItem>
-              {companies.map((c) => (
-                <SelectItem key={c} value={c}>
-                  {c}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </SidebarSection>
-
-        {/* Role */}
-        <SidebarSection label="Role">
-          <Select
-            value={filters.roleSort}
-            onValueChange={(v) => {
-              if (v) set("roleSort", v as SidebarFilters["roleSort"]);
+              if (v) set("dateSort", v as SidebarFilters["dateSort"]);
             }}
           >
             <SelectTrigger className="w-full">
@@ -620,8 +596,8 @@ function FiltersSidebar({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="DEFAULT">Default</SelectItem>
-              <SelectItem value="ASC">Sort A → Z</SelectItem>
-              <SelectItem value="DESC">Sort Z → A</SelectItem>
+              <SelectItem value="DESC">Newest</SelectItem>
+              <SelectItem value="ASC">Oldest</SelectItem>
             </SelectContent>
           </Select>
         </SidebarSection>
@@ -666,8 +642,6 @@ const columns: ColumnDef<JobWithContacts>[] = [
     accessorKey: "company",
     header: "Company",
     size: 130,
-    // Sidebar company dropdown filters via exact-match.
-    filterFn: "equalsString",
     cell: ({ getValue }) => (
       <span className="font-medium">{getValue<string>()}</span>
     ),
@@ -722,7 +696,12 @@ const columns: ColumnDef<JobWithContacts>[] = [
       <Button
         variant="ghost"
         size="sm"
-        onClick={row.getToggleExpandedHandler()}
+        // Stop propagation: without this, the click toggles via the button
+        // AND bubbles to the row's onClick which toggles again — net zero.
+        onClick={(e) => {
+          e.stopPropagation();
+          row.toggleExpanded();
+        }}
         className="gap-1"
       >
         {row.getIsExpanded() ? (
@@ -770,22 +749,42 @@ function JobRow({
 
   const cells = row.getVisibleCells();
 
+  // Clicking anywhere on the row toggles expansion. Interactive cells
+  // (status dropdown, More button) stop propagation so they don't
+  // double-toggle.
+  function handleRowClick() {
+    row.toggleExpanded();
+  }
+
   return (
     <Fragment>
-      <TableRow>
+      <TableRow
+        onClick={handleRowClick}
+        className="cursor-pointer hover:bg-muted/40"
+      >
         {cells.map((cell) => {
           // align-top + whitespace-normal lets long role titles wrap into
           // multiple lines instead of stretching the column.
           const wraps = WRAPPING_COLUMNS.has(cell.column.id);
           const className = wraps ? "whitespace-normal align-top" : undefined;
-          return cell.column.id === "status" ? (
-            <TableCell key={cell.id} className={className}>
-              <StatusSelect
-                status={optimisticStatus}
-                onChange={handleStatusChange}
-              />
-            </TableCell>
-          ) : (
+          if (cell.column.id === "status") {
+            return (
+              // Stop propagation here (not on the trigger itself) so the
+              // entire dropdown — including the click that opens it — is
+              // exempt from the row-toggle.
+              <TableCell
+                key={cell.id}
+                className={className}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <StatusSelect
+                  status={optimisticStatus}
+                  onChange={handleStatusChange}
+                />
+              </TableCell>
+            );
+          }
+          return (
             <TableCell key={cell.id} className={className}>
               {flexRender(cell.column.columnDef.cell, cell.getContext())}
             </TableCell>
@@ -826,8 +825,7 @@ export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
   const [globalFilter, setGlobalFilter] = useState("");
   const [filters, setFilters] = useState<SidebarFilters>({
     status: "ALL",
-    company: "ALL",
-    roleSort: "DEFAULT",
+    dateSort: "DEFAULT",
     matchSort: "DEFAULT",
   });
   const [expanded, setExpanded] = useState<ExpandedState>({});
@@ -843,15 +841,11 @@ export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
     if (filters.status !== "ALL") {
       c.push({ id: "status", value: filters.status });
     }
-    if (filters.company !== "ALL") {
-      c.push({ id: "company", value: filters.company });
-    }
     return c;
-  }, [filters.status, filters.company]);
+  }, [filters.status]);
 
-  // Role and Match % dropdowns are shortcuts for setting the table's sort
-  // state. Both can be active at once (multi-sort): pick Role A→Z and Match
-  // Highest, and rows sort by role first, then by match within ties.
+  // Match % dropdown is a shortcut for setting the table's sort state.
+  // (Date sort lives outside TanStack — see `sortedJobs` below.)
   function applyColumnSort(
     sorting: SortingState,
     columnId: string,
@@ -863,17 +857,26 @@ export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
   }
 
   function handleFiltersChange(next: SidebarFilters) {
-    if (next.roleSort !== filters.roleSort) {
-      setSorting((s) => applyColumnSort(s, "title", next.roleSort));
-    }
     if (next.matchSort !== filters.matchSort) {
       setSorting((s) => applyColumnSort(s, "fitScore", next.matchSort));
     }
     setFilters(next);
   }
 
+  // Date Added sort is applied to the data array before handing it to
+  // TanStack — there's no `createdAt` column in the table, so we can't
+  // express this via SortingState. TanStack's sort is stable, so Match %
+  // sort layered on top preserves our date order within ties.
+  const sortedJobs = useMemo(() => {
+    if (filters.dateSort === "DEFAULT") return jobs;
+    const dir = filters.dateSort === "DESC" ? -1 : 1;
+    return [...jobs].sort(
+      (a, b) => dir * (a.createdAt.getTime() - b.createdAt.getTime()),
+    );
+  }, [jobs, filters.dateSort]);
+
   const table = useReactTable({
-    data: jobs,
+    data: sortedJobs,
     columns,
     state: { sorting, globalFilter, columnFilters, expanded },
     onSortingChange: setSorting,
@@ -885,6 +888,11 @@ export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
     getFilteredRowModel: getFilteredRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
     getRowCanExpand: () => true,
+    // Use the Job's primary key as the row id. Without this, TanStack
+    // keys rows by array index — and deleting an expanded row shifts
+    // the indices so the now-vacant expanded slot displays a different
+    // job's detail panel.
+    getRowId: (job) => job.id,
   });
 
   const rows = table.getRowModel().rows;
@@ -898,18 +906,11 @@ export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
     return c;
   }, [jobs]);
 
-  // Sorted unique company list for the Company dropdown options.
-  const companies = useMemo(() => {
-    const set = new Set(jobs.map((j) => j.company));
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [jobs]);
-
   function clearFilters() {
     setGlobalFilter("");
     handleFiltersChange({
       status: "ALL",
-      company: "ALL",
-      roleSort: "DEFAULT",
+      dateSort: "DEFAULT",
       matchSort: "DEFAULT",
     });
   }
@@ -921,7 +922,6 @@ export function JobsTable({ jobs }: { jobs: JobWithContacts[] }) {
           filters={filters}
           onChange={handleFiltersChange}
           statusCounts={statusCounts}
-          companies={companies}
         />
 
         <div className="flex min-w-0 flex-1 flex-col gap-3">

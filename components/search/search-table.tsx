@@ -206,6 +206,8 @@ const columns: ColumnDef<LeadWithStatus>[] = [
     accessorKey: "title",
     header: "Role",
     enableSorting: false,
+    // Title is the click-target for the posting — underlined so users know
+    // it navigates, opens in a new tab so they don't lose the search page.
     cell: ({ row }) => {
       const lead = row.original;
       return (
@@ -213,10 +215,10 @@ const columns: ColumnDef<LeadWithStatus>[] = [
           href={lead.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-start gap-1 hover:underline"
+          className="inline-flex items-start gap-1 text-primary underline underline-offset-2 hover:no-underline"
         >
           <span>{lead.title}</span>
-          <ExternalLinkIcon className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+          <ExternalLinkIcon className="mt-0.5 size-3 shrink-0" />
         </a>
       );
     },

@@ -8,7 +8,6 @@ import {
 import type { ScrapeFilter } from "@/lib/generated/prisma/client";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -46,10 +45,6 @@ export function SearchFilterSidebar({
     FormData
   >(saveScrapeFilter, undefined);
 
-  // Comma- or newline-joined for the textarea. Server-side preprocess
-  // splits the user's input back into an array.
-  const initialRoles = (filter?.roles ?? []).join(", ");
-
   return (
     <aside className="w-full shrink-0 md:w-64">
       <form
@@ -75,11 +70,16 @@ export function SearchFilterSidebar({
             }}
           >
             <SelectTrigger id="filter-sort" className="w-full">
-              <SelectValue />
+              {/* Base UI's SelectValue renders the raw value string by
+                  default — pass a children fn so the trigger displays the
+                  capitalized label that matches each SelectItem. */}
+              <SelectValue>
+                {(v) => (v === "oldest" ? "Oldest" : "Newest")}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="newest">Posted: newest first</SelectItem>
-              <SelectItem value="oldest">Posted: oldest first</SelectItem>
+              <SelectItem value="newest">Newest</SelectItem>
+              <SelectItem value="oldest">Oldest</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -91,18 +91,6 @@ export function SearchFilterSidebar({
               old <Select name="major">. Empty string ("") means "no
               umbrella", which the server action turns into null. */}
           <MajorCombobox name="major" initialValue={filter?.major ?? null} />
-        </div>
-
-        <div className="grid gap-1.5">
-          <Label htmlFor="filter-roles">Role (optional)</Label>
-          <Textarea
-            id="filter-roles"
-            name="roles"
-            placeholder="data engineer, ml engineer, applied scientist"
-            defaultValue={initialRoles}
-            rows={3}
-            className="text-sm"
-          />
         </div>
 
         {state?.error ? (

@@ -196,7 +196,7 @@ export function MajorCombobox({ name, initialValue }: Props) {
                   value === null && "bg-accent/60",
                 )}
               >
-                <span className="text-muted-foreground">No umbrella</span>
+                <span className="text-muted-foreground">None</span>
                 {value === null ? <CheckIcon className="size-3.5" /> : null}
               </button>
             </li>
