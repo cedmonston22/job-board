@@ -9,10 +9,12 @@ import { prisma } from "@/lib/prisma";
 // NULL, distinguishing it from the JSON value `null`. Plain `null` in an update
 // is a type error for Json fields — must use this.
 import { Prisma } from "@/lib/generated/prisma/client";
+import { extractResumeText } from "@/lib/resume-extractor";
+import { parseResumeText } from "@/lib/resume-parser";
 
 // What the client passes as `result` from useActionState.
 export type ResumeUploadResult =
-  | { ok: true }
+  | { ok: true; extractionError?: string; parseError?: string }
   | { ok: false; error: string };
 
 // MIME types we accept. Browsers send the same type from PDF/DOCX/TXT files
@@ -69,6 +71,11 @@ export async function uploadResume(
     select: { fileUrl: true },
   });
 
+  // Read the file bytes once. We need them twice: for the Blob upload AND for
+  // text extraction. arrayBuffer() consumes a File once, so we save it to a
+  // Buffer to reuse.
+  const buffer = Buffer.from(await file.arrayBuffer());
+
   // Upload to Vercel Blob with `access: "private"`. The returned URL is an
   // internal identifier — NOT publicly accessible. To let the browser view the
   // file, we'll proxy it through `/api/resume/view` which auth-checks on each
@@ -76,7 +83,7 @@ export async function uploadResume(
   // `addRandomSuffix` ensures unique URLs so re-uploads get new paths.
   let blob;
   try {
-    blob = await put(file.name, file, {
+    blob = await put(file.name, buffer, {
       access: "private",
       contentType: file.type || "application/octet-stream",
       addRandomSuffix: true,
@@ -90,6 +97,32 @@ export async function uploadResume(
     };
   }
 
+  // Extract plain text from the file so Phase 4/5 AI features have something
+  // to read. On failure we still save the resume — the user can re-upload a
+  // different format. extractedText is nullable on the model.
+  const extraction = await extractResumeText(
+    buffer,
+    file.type || "application/octet-stream",
+  );
+  const extractedText = extraction.ok ? extraction.text : null;
+
+  // If we have text, immediately ask Groq to parse it into structured JSON.
+  // We do this inline (rather than firing a separate "parse" call after the
+  // upload) so the user sees one loading state and the result is ready when
+  // the page revalidates.
+  let parsedJson: Prisma.InputJsonValue | typeof Prisma.DbNull = Prisma.DbNull;
+  let parsedAt: Date | null = null;
+  let parseError: string | undefined;
+  if (extractedText) {
+    const parsed = await parseResumeText(extractedText);
+    if (parsed.ok) {
+      parsedJson = parsed.data as Prisma.InputJsonValue;
+      parsedAt = new Date();
+    } else {
+      parseError = parsed.error;
+    }
+  }
+
   // Upsert the DB row. Clearing parsedJson/parsedAt — the new file means any
   // previously-parsed data is stale; step 2.4 will fill these in.
   await prisma.resume.upsert({
@@ -100,14 +133,18 @@ export async function uploadResume(
       fileName: file.name,
       fileMimeType: file.type || "application/octet-stream",
       fileSize: file.size,
+      extractedText,
+      parsedJson,
+      parsedAt,
     },
     update: {
       fileUrl: blob.url,
       fileName: file.name,
       fileMimeType: file.type || "application/octet-stream",
       fileSize: file.size,
-      parsedJson: Prisma.DbNull,
-      parsedAt: null,
+      extractedText,
+      parsedJson,
+      parsedAt,
     },
   });
 
@@ -122,7 +159,43 @@ export async function uploadResume(
   }
 
   revalidatePath("/profile");
-  return { ok: true };
+  return {
+    ok: true,
+    extractionError: extraction.ok ? undefined : extraction.error,
+    parseError,
+  };
+}
+
+// ----- reparseResume -----
+// Re-runs Groq parsing against the already-stored extractedText. Used when
+// the first parse failed, or when the user wants a fresh attempt. Doesn't
+// touch the blob — only updates parsedJson + parsedAt.
+export async function reparseResume(): Promise<ResumeUploadResult> {
+  const userId = await requireUserId();
+
+  const resume = await prisma.resume.findUnique({
+    where: { userId },
+    select: { extractedText: true },
+  });
+  if (!resume) return { ok: false, error: "No resume to parse." };
+  if (!resume.extractedText) {
+    return { ok: false, error: "No extracted text — re-upload the file." };
+  }
+
+  const parsed = await parseResumeText(resume.extractedText);
+
+  await prisma.resume.update({
+    where: { userId },
+    data: {
+      parsedJson: parsed.ok
+        ? (parsed.data as Prisma.InputJsonValue)
+        : Prisma.DbNull,
+      parsedAt: parsed.ok ? new Date() : null,
+    },
+  });
+
+  revalidatePath("/profile");
+  return parsed.ok ? { ok: true } : { ok: false, error: parsed.error };
 }
 
 // ----- deleteResume -----

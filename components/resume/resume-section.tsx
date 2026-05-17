@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState, useTransition } from "react";
+import { useActionState, useRef, useState, useTransition } from "react";
 import {
   ExternalLinkIcon,
   FileIcon,
@@ -9,11 +9,13 @@ import {
 } from "lucide-react";
 import {
   deleteResume,
+  reparseResume,
   uploadResume,
   type ResumeUploadResult,
 } from "@/app/actions/resume";
 import type { Resume } from "@/lib/generated/prisma/client";
 import { Button } from "@/components/ui/button";
+import { ResumePreview } from "@/components/resume/resume-preview";
 
 // Server passes the user's existing resume (or null). The two states render
 // completely different UI — upload form vs. info card with Replace/Delete.
@@ -76,6 +78,15 @@ function ResumeUploadForm() {
 
       {state && state.ok === false ? (
         <p className="text-sm text-destructive">{state.error}</p>
+      ) : state && state.ok === true && state.extractionError ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs">
+          <div className="font-medium text-destructive">
+            File uploaded, but text extraction failed
+          </div>
+          <div className="mt-1 break-words text-muted-foreground">
+            {state.extractionError}
+          </div>
+        </div>
       ) : null}
 
       <div className="flex justify-end">
@@ -93,72 +104,154 @@ function ResumeUploadForm() {
 
 function ResumeUploaded({ resume }: { resume: Resume }) {
   return (
-    <div className="grid gap-4">
-      <div className="flex items-center gap-3 rounded-md border bg-muted/30 p-4">
-        <FileIcon className="size-8 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{resume.fileName}</div>
-          <div className="text-xs text-muted-foreground">
-            {formatBytes(resume.fileSize)} ·{" "}
-            {formatRelative(resume.uploadedAt)}
+    // Two-column grid on lg+ screens — file card + controls on the left,
+    // parsed preview / status on the right. Stacks vertically on smaller
+    // screens. `content-start` on the left column prevents its items from
+    // stretching to match the (usually much taller) preview column.
+    <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+      <div className="grid content-start gap-4">
+        <div className="flex items-center gap-3 rounded-md border bg-muted/30 p-4">
+          <FileIcon className="size-8 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium">
+              {resume.fileName}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {formatBytes(resume.fileSize)} ·{" "}
+              {formatRelative(resume.uploadedAt)}
+            </div>
           </div>
+          <a
+            href="/api/resume/view"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-primary underline-offset-4 hover:underline"
+          >
+            View
+            <ExternalLinkIcon className="size-3" />
+          </a>
         </div>
-        <a
-          href="/api/resume/view"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1 text-sm text-primary underline-offset-4 hover:underline"
-        >
-          View
-          <ExternalLinkIcon className="size-3" />
-        </a>
+
+        <div className="flex justify-between gap-2">
+          <DeleteResumeButton />
+          <ReplaceResumeButton />
+        </div>
       </div>
 
-      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
-        Text extraction + AI parsing arrive in steps 2.3–2.4.
-      </div>
-
-      <div className="flex justify-between gap-2">
-        <DeleteResumeButton />
-        <ReplaceResumeButton />
+      <div>
+        {!resume.extractedText ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm">
+            <div className="font-medium text-destructive">
+              Couldn't read the file
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              It may be a scanned image (no text layer), password-protected, or
+              corrupted. Try replacing with a different format.
+            </div>
+          </div>
+        ) : resume.parsedJson ? (
+          <ResumePreview json={resume.parsedJson} />
+        ) : (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
+            <div className="font-medium text-amber-700 dark:text-amber-400">
+              AI couldn't parse the resume
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              The text was extracted but Groq's structured-output call failed.
+              Try again — the upstream error is usually transient.
+            </div>
+            <div className="mt-3">
+              <ReParseButton />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// "Replace" mounts the upload form inline. Same flow as initial upload — the
-// server action overwrites the existing row.
+// "Replace" is a one-click flow: click button → file picker opens → user
+// picks a file → form auto-submits. No intermediate UI.
+//
+// The trick is a hidden <input type="file"> tied to a real <form>. The visible
+// button is `type="button"` so it doesn't submit on its own — its onClick just
+// programmatically clicks the hidden input, which opens the OS file picker.
+// When the user picks a file, onChange fires; we then call requestSubmit() on
+// the form to trigger the bound useActionState formAction with the file.
 function ReplaceResumeButton() {
-  const [replacing, setReplacing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
-  if (!replacing) {
-    return (
+  const [state, formAction, pending] = useActionState<
+    ResumeUploadResult | undefined,
+    FormData
+  >(uploadResume, undefined);
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    if (e.target.files?.[0]) {
+      formRef.current?.requestSubmit();
+    }
+  }
+
+  return (
+    <form
+      ref={formRef}
+      action={formAction}
+      className="inline-flex items-center gap-2"
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        name="file"
+        accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+        className="hidden"
+        onChange={handleChange}
+      />
       <Button
         type="button"
         variant="outline"
         size="sm"
-        onClick={() => setReplacing(true)}
+        onClick={() => inputRef.current?.click()}
+        disabled={pending}
+        className="gap-1"
       >
         <UploadIcon className="size-4" />
-        Replace
+        {pending ? "Uploading…" : "Replace"}
       </Button>
-    );
-  }
+      {state && state.ok === false ? (
+        <span className="text-xs text-destructive">{state.error}</span>
+      ) : null}
+    </form>
+  );
+}
+
+// Triggers re-parsing of the existing extractedText. Used when the upload-time
+// Groq parse failed (transient API error, etc.). One-click — no confirmation
+// since this isn't destructive.
+function ReParseButton() {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
 
   return (
-    <div className="w-full rounded-md border p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-sm font-medium">Replace resume</span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={() => setReplacing(false)}
-        >
-          Cancel
-        </Button>
-      </div>
-      <ResumeUploadForm />
+    <div className="flex items-center gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={pending}
+        onClick={() =>
+          startTransition(async () => {
+            setError(null);
+            const result = await reparseResume();
+            if (!result.ok) setError(result.error);
+          })
+        }
+      >
+        {pending ? "Parsing…" : "Try parsing again"}
+      </Button>
+      {error ? (
+        <span className="text-xs text-destructive">{error}</span>
+      ) : null}
     </div>
   );
 }

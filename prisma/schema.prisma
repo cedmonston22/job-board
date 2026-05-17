@@ -134,10 +134,15 @@ model Resume {
   userId String @unique
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  fileUrl      String // public Vercel Blob URL
+  fileUrl      String // Vercel Blob URL (private — see app/api/resume/view/route.ts)
   fileName     String // original filename, e.g. "alex-resume.pdf"
   fileMimeType String // application/pdf | application/vnd...wordprocessingml.document | text/plain
   fileSize     Int // bytes
+
+  // Plain text extracted from the file on upload. Used as the AI input in
+  // step 2.4 and downstream by Phase 4/5. Null if extraction failed (e.g.
+  // scanned PDF with no text layer).
+  extractedText String?
 
   parsedJson Json? // populated in step 2.4
 

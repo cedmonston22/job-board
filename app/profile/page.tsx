@@ -37,8 +37,8 @@ export default async function ProfilePage() {
 
         <h1 className="mt-4 text-2xl font-semibold">Profile</h1>
 
-        <div className="mt-6 grid max-w-2xl gap-6">
-          <section className="rounded-lg border p-6">
+        <div className="mt-6 grid max-w-6xl gap-6">
+          <section className="max-w-md rounded-lg border p-6">
             <div className="flex items-center gap-4">
               <Avatar
                 src={user.image}

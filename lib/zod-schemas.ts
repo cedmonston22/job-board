@@ -104,3 +104,55 @@ export const contactInputSchema = z.object({
 });
 
 export type ContactInput = z.infer<typeof contactInputSchema>;
+
+// Shape we expect Groq to return when parsing the extracted text of a resume.
+// Used both to validate the LLM response AND as the source of truth for the
+// `ParsedResume` type that the UI components consume.
+//
+// Most string fields are nullable because resumes vary wildly — not every
+// resume has a summary, GPA, etc. The array fields (workExperience, education,
+// skills, projects) MUST be arrays, defaulting to [] when absent.
+export const parsedResumeSchema = z.object({
+  name: z.string().nullable(),
+  email: z.string().nullable(),
+  phone: z.string().nullable(),
+  location: z.string().nullable(),
+  linkedinUrl: z.string().nullable(),
+  websiteUrl: z.string().nullable(),
+  summary: z.string().nullable(),
+
+  workExperience: z.array(
+    z.object({
+      company: z.string(),
+      role: z.string(),
+      location: z.string().nullable(),
+      startDate: z.string().nullable(),
+      endDate: z.string().nullable(),
+      isCurrent: z.boolean(),
+      bullets: z.array(z.string()),
+    }),
+  ),
+
+  education: z.array(
+    z.object({
+      school: z.string(),
+      degree: z.string().nullable(),
+      field: z.string().nullable(),
+      startDate: z.string().nullable(),
+      endDate: z.string().nullable(),
+      gpa: z.string().nullable(),
+    }),
+  ),
+
+  skills: z.array(z.string()),
+
+  projects: z.array(
+    z.object({
+      name: z.string(),
+      description: z.string().nullable(),
+      technologies: z.array(z.string()),
+    }),
+  ),
+});
+
+export type ParsedResume = z.infer<typeof parsedResumeSchema>;
