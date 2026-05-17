@@ -128,3 +128,23 @@
     @apply font-sans;
   }
 }
+
+/* Login landing page — horizontal logo drift across the backdrop.
+   GPU-only (transform), keeps the main thread free. */
+@keyframes drift-lr {
+  from {
+    transform: translate3d(-15vw, 0, 0);
+  }
+  to {
+    transform: translate3d(115vw, 0, 0);
+  }
+}
+
+@keyframes drift-rl {
+  from {
+    transform: translate3d(115vw, 0, 0);
+  }
+  to {
+    transform: translate3d(-15vw, 0, 0);
+  }
+}
