@@ -3,8 +3,8 @@ import { redirect } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { skipOnboarding } from "@/app/actions/onboarding";
 import { ResumeSection } from "@/components/resume/resume-section";
+import { SkipButton } from "@/components/onboarding/skip-button";
 
 export const metadata: Metadata = {
   title: "Welcome · Job Board",
@@ -59,17 +59,9 @@ export default async function OnboardingPage() {
           <ResumeSection resume={null} />
         </section>
 
-        <form
-          action={skipOnboarding}
-          className="flex justify-center"
-        >
-          <button
-            type="submit"
-            className="text-sm text-zinc-500 underline-offset-4 hover:text-zinc-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2 rounded"
-          >
-            Skip for now
-          </button>
-        </form>
+        <div className="flex justify-center">
+          <SkipButton />
+        </div>
       </div>
     </main>
   );
