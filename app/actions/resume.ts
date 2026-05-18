@@ -3,6 +3,7 @@
 import { del, put } from "@vercel/blob";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 // Prisma uses a special sentinel (Prisma.DbNull) to set a Json? column to SQL
@@ -12,9 +13,12 @@ import { Prisma } from "@/lib/generated/prisma/client";
 import { extractResumeText } from "@/lib/resume-extractor";
 import { parseResumeText } from "@/lib/resume-parser";
 
-// What the client passes as `result` from useActionState.
+// What the client passes as `result` from useActionState. `parseError` was
+// removed when Groq parsing moved to a background `after()` task — the
+// outcome is reflected by Resume.parsedJson on the next render, not by the
+// action's return value.
 export type ResumeUploadResult =
-  | { ok: true; extractionError?: string; parseError?: string }
+  | { ok: true; extractionError?: string }
   | { ok: false; error: string };
 
 // MIME types we accept. Browsers send the same type from PDF/DOCX/TXT files
@@ -106,25 +110,11 @@ export async function uploadResume(
   );
   const extractedText = extraction.ok ? extraction.text : null;
 
-  // If we have text, immediately ask Groq to parse it into structured JSON.
-  // We do this inline (rather than firing a separate "parse" call after the
-  // upload) so the user sees one loading state and the result is ready when
-  // the page revalidates.
-  let parsedJson: Prisma.InputJsonValue | typeof Prisma.DbNull = Prisma.DbNull;
-  let parsedAt: Date | null = null;
-  let parseError: string | undefined;
-  if (extractedText) {
-    const parsed = await parseResumeText(extractedText);
-    if (parsed.ok) {
-      parsedJson = parsed.data as Prisma.InputJsonValue;
-      parsedAt = new Date();
-    } else {
-      parseError = parsed.error;
-    }
-  }
-
-  // Upsert the DB row. Clearing parsedJson/parsedAt — the new file means any
-  // previously-parsed data is stale; step 2.4 will fill these in.
+  // Upsert the DB row with parsedJson cleared. The Groq parse runs AFTER the
+  // response via `after()` below — see the rationale there. The "AI couldn't
+  // parse the resume" UI in resume-section.tsx already handles parsedJson ==
+  // null with a "Try parsing again" button, so a missing parse is a benign
+  // intermediate state, not an error.
   await prisma.resume.upsert({
     where: { userId },
     create: {
@@ -134,8 +124,8 @@ export async function uploadResume(
       fileMimeType: file.type || "application/octet-stream",
       fileSize: file.size,
       extractedText,
-      parsedJson,
-      parsedAt,
+      parsedJson: Prisma.DbNull,
+      parsedAt: null,
     },
     update: {
       fileUrl: blob.url,
@@ -143,10 +133,41 @@ export async function uploadResume(
       fileMimeType: file.type || "application/octet-stream",
       fileSize: file.size,
       extractedText,
-      parsedJson,
-      parsedAt,
+      parsedJson: Prisma.DbNull,
+      parsedAt: null,
     },
   });
+
+  // Kick off Groq parsing in the background. Previously this was awaited
+  // inline, which added ~10–25s (30K-char input to llama-3.3-70b) to every
+  // upload before the redirect fired — users sat on the upload spinner the
+  // entire time. With `after()`, the response (redirect or return) is sent
+  // immediately and Groq runs in the same lambda after the response is
+  // flushed. The DB row update fills parsedJson/parsedAt when the call
+  // resolves; the next /profile render picks it up.
+  if (extractedText) {
+    after(async () => {
+      const parsed = await parseResumeText(extractedText);
+      if (!parsed.ok) {
+        // No DB write needed — parsedJson is already DbNull. Logging only.
+        console.error("Background resume parse failed:", parsed.error);
+        return;
+      }
+      try {
+        await prisma.resume.update({
+          where: { userId },
+          data: {
+            parsedJson: parsed.data as Prisma.InputJsonValue,
+            parsedAt: new Date(),
+          },
+        });
+      } catch (err) {
+        // Race: user may have deleted the resume between upload and parse
+        // finishing. Swallow — there's no row to update.
+        console.error("Failed to persist parsed resume:", err);
+      }
+    });
+  }
 
   // Best-effort cleanup of the old blob. If it fails (network blip, blob
   // already gone), we log and move on — an orphan blob is acceptable.
@@ -182,7 +203,6 @@ export async function uploadResume(
   return {
     ok: true,
     extractionError: extraction.ok ? undefined : extraction.error,
-    parseError,
   };
 }
 

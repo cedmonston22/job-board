@@ -36,13 +36,15 @@ export async function extractResumeText(
 
     if (mimeType === PDF_MIME) {
       // unpdf takes a Uint8Array; Buffer extends Uint8Array so the cast is
-      // free. `mergePages: true` returns a single concatenated string
-      // instead of an array of per-page strings — what we want for a resume
-      // (no need to preserve page boundaries for downstream LLM use).
-      const result = await extractText(new Uint8Array(buffer), {
-        mergePages: true,
-      });
-      text = result.text;
+      // free. We deliberately DON'T pass `mergePages: true` — that path
+      // internally does `texts.join("\n").replace(/\s+/g, " ")`, which
+      // collapses every newline into a space. Resumes lose all section
+      // structure (headings, bullets, work history boundaries) and Groq
+      // can no longer parse them reliably. Asking for the per-page array
+      // and joining with \n\n preserves the line breaks that getPageText
+      // emits from `hasEOL` items.
+      const result = await extractText(new Uint8Array(buffer));
+      text = result.text.join("\n\n");
     } else if (mimeType === DOCX_MIME) {
       const result = await mammoth.extractRawText({ buffer });
       text = result.value;
