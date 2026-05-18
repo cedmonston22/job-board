@@ -1,6 +1,8 @@
 import type { SVGProps } from "react";
 
-// Real brand SVGs for the eight sources Job Board pulls postings from.
+// Real brand SVGs for the nine major job platforms shown in the marquee.
+// Most map to sources Job Board pulls postings from; Handshake is included
+// as a recognized college-recruiting brand even though we don't scrape it.
 //
 // Each entry exposes:
 //   name         — display label
@@ -25,6 +27,8 @@ import type { SVGProps } from "react";
 //   Workday      — worldvectorlogo (workday-logo.svg, official)
 //   Ashby        — geometric approximation (their brand assets are gated
 //                  behind Brandfetch's paid API; no public SVG download)
+//   Handshake    — joinhandshake.com/handshake-app-icon.svg (official app
+//                  icon: neon-yellow rounded square with dark teal "H")
 //
 // Trademark note: these are trademarks of their respective owners, used here
 // at low opacity for decorative reference on a personal-use page; not
@@ -144,6 +148,48 @@ const AshbySvg: LogoSvg = (props) => (
   </svg>
 );
 
+// ---------- Handshake (joinhandshake.com/handshake-app-icon.svg) ----------
+// The iconic neon-yellow rounded square with the dark teal "H" silhouette.
+// Filter and decorative edge-highlight paths from the source SVG are dropped
+// — they're invisible at the 24–29px sizes we render at, and would just
+// inflate the bundle. Gradient IDs use a "hs-" prefix; multiple instances on
+// the page share IDs, which is allowed for identical defs (the browser uses
+// the first match, and they all look the same).
+const HandshakeSvg: LogoSvg = (props) => (
+  <svg viewBox="0 0 165 165" xmlns="http://www.w3.org/2000/svg" {...props}>
+    <defs>
+      <linearGradient
+        id="hs-bg"
+        x1="125.192"
+        y1="-3.30592"
+        x2="96.1385"
+        y2="189.689"
+        gradientUnits="userSpaceOnUse"
+      >
+        <stop stopColor="#DDFF55" />
+        <stop offset="0.865235" stopColor="#C7F542" />
+        <stop offset="0.994449" stopColor="#D3FB52" />
+      </linearGradient>
+      <linearGradient
+        id="hs-h"
+        x1="115.447"
+        y1="40.9259"
+        x2="39.4339"
+        y2="101.237"
+        gradientUnits="userSpaceOnUse"
+      >
+        <stop stopColor="#052326" />
+        <stop offset="1" stopColor="#073D42" />
+      </linearGradient>
+    </defs>
+    <rect width="165" height="165" rx="35.61" fill="url(#hs-bg)" />
+    <path
+      fill="url(#hs-h)"
+      d="M99.5856 33.1611L92.95 70.9048L73.4585 86.8363L82.8902 33.1611H63.9964L46.521 132.161H65.4147L70.2673 104.772L89.8297 88.719L82.1101 132.161H101.014L118.479 33.1611H99.5856Z"
+    />
+  </svg>
+);
+
 export const COMPANY_LOGOS: CompanyLogo[] = [
   { name: "LinkedIn", Svg: LinkedInSvg, brandColor: "#007EBB" },
   { name: "Greenhouse", Svg: GreenhouseSvg, brandColor: "#24A47F" },
@@ -153,4 +199,5 @@ export const COMPANY_LOGOS: CompanyLogo[] = [
   { name: "Glassdoor", Svg: GlassdoorSvg, brandColor: "#00A162" },
   { name: "Simplify", Svg: SimplifySvg, brandColor: "#3EC0DD" },
   { name: "Workday", Svg: WorkdaySvg, brandColor: "#3069B5", wordmarkOnly: true },
+  { name: "Handshake", Svg: HandshakeSvg, brandColor: "#052326" },
 ];
