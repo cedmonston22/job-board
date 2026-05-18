@@ -4,6 +4,7 @@ import { MAJOR_KEYWORDS, type Major } from "@/lib/major-keywords";
 import { getStaleCutoff } from "@/lib/scrapers/cleanup";
 import { Header } from "@/components/header";
 import { SearchView } from "@/components/search/search-view";
+import { ScrapeStatusPill } from "@/components/search/scrape-status-pill";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
 // /jobs/search — the scraped-leads tab.
@@ -91,8 +92,10 @@ export default async function JobSearchPage({
   };
 
   // Parallel: total count for pagination UI + the actual page slice +
-  // the user's existing Jobs (for the "In Your Jobs" badge match).
-  const [total, leads, existingJobs] = await Promise.all([
+  // the user's existing Jobs (for the "In Your Jobs" badge match) +
+  // the most recent ScrapeRun row (drives the "Last scrape: 4h ago"
+  // status pill — see ScrapeRun model rationale in schema.prisma).
+  const [total, leads, existingJobs, lastRun] = await Promise.all([
     prisma.discoveredJob.count({ where }),
     prisma.discoveredJob.findMany({
       where,
@@ -124,6 +127,20 @@ export default async function JobSearchPage({
         sourceId: { not: null },
       },
       select: { source: true, sourceId: true },
+    }),
+    prisma.scrapeRun.findFirst({
+      where: { userId: user.id },
+      orderBy: { startedAt: "desc" },
+      select: {
+        trigger: true,
+        startedAt: true,
+        finishedAt: true,
+        ok: true,
+        inserted: true,
+        updated: true,
+        sourcesErrored: true,
+        errorMessage: true,
+      },
     }),
   ]);
 
@@ -157,6 +174,7 @@ export default async function JobSearchPage({
               RemoteOK, and the Simplify / vansh internship lists.
             </p>
           </div>
+          <ScrapeStatusPill lastRun={lastRun} />
         </div>
 
         <SearchView

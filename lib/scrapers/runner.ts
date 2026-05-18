@@ -28,6 +28,9 @@ import {
   SIMPLIFY_SUMMER_URL,
 } from "./simplify";
 import type { Adapter, RawJob, RunSummary } from "./types";
+// Prisma's generated enum value — pass-through to `trigger` field of the
+// ScrapeRun row we write at the end of every invocation.
+import { ScrapeTrigger } from "../generated/prisma/client";
 
 // Top-level result of a scrape run. `pruned` is how many stale rows were
 // removed before fetching new ones; `sources` is the per-source detail.
@@ -49,31 +52,123 @@ const ADAPTERS: Partial<Record<ScrapeSourceTypeInput, Adapter>> = {
   OUCKAH_SUMMER: ouckahAdapter,
 };
 
-export async function runScrapeForUser(userId: string): Promise<RunResult> {
-  // Prune first so the run starts with a clean baseline. Cheap (one
-  // deleteMany) and idempotent — does nothing if there's nothing stale.
-  const pruned = await deleteStaleDiscoveredJobs(userId);
-
-  // One round-trip to load the filter. May be null if the user has never
-  // touched the filter sidebar — applyFilter handles that.
-  const filter = await prisma.scrapeFilter.findUnique({ where: { userId } });
-
-  // Promise.allSettled because we want ALL sources to attempt regardless of
-  // any single failure — a 500 from Lever shouldn't block Greenhouse results.
-  const settled = await Promise.allSettled(
-    DEFAULT_SOURCES.map((source) => runOneSource(userId, source, filter)),
-  );
-
-  // `runOneSource` always resolves with a RunSummary (it catches its own
-  // errors and stuffs them into `errored`). The .rejected branch only
-  // fires on truly unexpected bugs.
-  const sources = settled.map((s, i) => {
-    if (s.status === "fulfilled") return s.value;
-    const src = DEFAULT_SOURCES[i];
-    return blankSummary(src, `unexpected error: ${String(s.reason)}`);
+export async function runScrapeForUser(
+  userId: string,
+  // Defaults to MANUAL so existing callers (the manual /api/scrape/run
+  // endpoint, tests) don't need to change. The cron route passes CRON
+  // explicitly. The trigger ends up on the ScrapeRun audit row so the
+  // /jobs/search status pill can tell at a glance "last cron 4h ago" vs
+  // "last manual 2 min ago" — the difference matters when diagnosing
+  // whether the SCHEDULED scrape is firing.
+  trigger: ScrapeTrigger = ScrapeTrigger.MANUAL,
+): Promise<RunResult> {
+  // Create the audit row up-front in `ok: false` state. Whichever branch
+  // we exit through (success / per-source failures / unexpected throw)
+  // updates this row at the end. Without the up-front insert, a crash
+  // mid-run would leave NO record of the attempt, defeating the whole
+  // observability point.
+  const auditRow = await prisma.scrapeRun.create({
+    data: { userId, trigger, ok: false },
+    select: { id: true },
   });
 
+  let pruned = 0;
+  let sources: RunSummary[] = [];
+  let thrownError: Error | null = null;
+
+  try {
+    // Prune first so the run starts with a clean baseline. Cheap (one
+    // deleteMany) and idempotent — does nothing if there's nothing stale.
+    pruned = await deleteStaleDiscoveredJobs(userId);
+
+    // One round-trip to load the filter. May be null if the user has never
+    // touched the filter sidebar — applyFilter handles that.
+    const filter = await prisma.scrapeFilter.findUnique({ where: { userId } });
+
+    // Promise.allSettled because we want ALL sources to attempt regardless of
+    // any single failure — a 500 from Lever shouldn't block Greenhouse results.
+    const settled = await Promise.allSettled(
+      DEFAULT_SOURCES.map((source) => runOneSource(userId, source, filter)),
+    );
+
+    // `runOneSource` always resolves with a RunSummary (it catches its own
+    // errors and stuffs them into `errored`). The .rejected branch only
+    // fires on truly unexpected bugs.
+    sources = settled.map((s, i) => {
+      if (s.status === "fulfilled") return s.value;
+      const src = DEFAULT_SOURCES[i];
+      return blankSummary(src, `unexpected error: ${String(s.reason)}`);
+    });
+  } catch (err) {
+    // Top-level catch — something outside any single adapter blew up
+    // (Prisma down, cleanup query failed, etc.). Capture the error so
+    // it lands on the audit row, then re-throw so the caller (cron
+    // route / manual endpoint) sees the failure too.
+    thrownError = err as Error;
+  }
+
+  // Aggregate the per-source numbers for the top-level columns. Best-effort
+  // — if the audit-row update itself fails we just log; we never want a
+  // logging failure to mask a successful (or already-failed) scrape.
+  const agg = aggregateSummaries(sources);
+  try {
+    await prisma.scrapeRun.update({
+      where: { id: auditRow.id },
+      data: {
+        finishedAt: new Date(),
+        ok: thrownError === null,
+        errorMessage: thrownError?.message ?? null,
+        pruned,
+        fetched: agg.fetched,
+        kept: agg.kept,
+        inserted: agg.inserted,
+        updated: agg.updated,
+        sourcesOk: agg.sourcesOk,
+        sourcesErrored: agg.sourcesErrored,
+        // Cast through unknown — Prisma's Json input is `InputJsonValue`
+        // and our RunSummary[] is structurally compatible (all primitive
+        // leaves) but TS can't prove it without the cast.
+        sources: sources as unknown as object[],
+      },
+    });
+  } catch (auditErr) {
+    console.error(
+      `[scrape] failed to write ScrapeRun audit row ${auditRow.id}:`,
+      auditErr,
+    );
+  }
+
+  if (thrownError) throw thrownError;
   return { pruned, sources };
+}
+
+function aggregateSummaries(sources: RunSummary[]): {
+  fetched: number;
+  kept: number;
+  inserted: number;
+  updated: number;
+  sourcesOk: number;
+  sourcesErrored: number;
+} {
+  return sources.reduce(
+    (acc, s) => {
+      acc.fetched += s.fetched;
+      acc.kept += s.kept;
+      acc.inserted += s.inserted;
+      acc.updated += s.updated;
+      if (s.errored) acc.sourcesErrored += 1;
+      else acc.sourcesOk += 1;
+      return acc;
+    },
+    {
+      fetched: 0,
+      kept: 0,
+      inserted: 0,
+      updated: 0,
+      sourcesOk: 0,
+      sourcesErrored: 0,
+    },
+  );
 }
 
 async function runOneSource(

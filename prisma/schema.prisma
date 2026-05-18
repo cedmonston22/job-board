@@ -27,6 +27,7 @@ model User {
   resume          Resume?
   scrapeFilter    ScrapeFilter?
   discoveredJobs  DiscoveredJob[]
+  scrapeRuns      ScrapeRun[]
 
   // Set the first time the user finishes (or skips) onboarding. Null = the
   // user has signed in but hasn't been through the welcome/resume-upload step
@@ -248,4 +249,54 @@ model DiscoveredJob {
   @@unique([userId, source, sourceId])
   // Fast lookup for "show me undismissed, unimported leads".
   @@index([userId, dismissedAt, importedJobId])
+}
+
+// Audit row for every scrape invocation (cron + manual). The cron route
+// hits `/api/cron/scrape` daily at 11:00 UTC and iterates users; the
+// `/api/scrape/run` manual endpoint targets a single user. Both write a
+// ScrapeRun so we can see at a glance whether the scheduled run actually
+// fired and what it produced — without this, a silent 401 on the cron
+// (e.g. CRON_SECRET unset on Vercel) is invisible until a user notices
+// stale data.
+//
+// Aggregate counts here, per-source detail in the JSON column. The detail
+// matches the RunSummary shape (see lib/scrapers/types.ts).
+enum ScrapeTrigger {
+  CRON
+  MANUAL
+}
+
+model ScrapeRun {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  trigger     ScrapeTrigger
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  // Top-level success/failure. `ok = false` means the run itself threw
+  // (DB error, network catastrophe). Per-source errors don't flip this —
+  // they're captured in `sourcesErrored` + the JSON breakdown.
+  ok           Boolean @default(false)
+  errorMessage String?
+
+  // Aggregated counters across all sources for this run.
+  pruned         Int @default(0)
+  fetched        Int @default(0)
+  kept           Int @default(0)
+  inserted       Int @default(0)
+  updated        Int @default(0)
+  sourcesOk      Int @default(0)
+  sourcesErrored Int @default(0)
+
+  // Per-source breakdown — array of { source, label, fetched, kept,
+  // inserted, updated, errored }. JSON because the shape is read-only
+  // for display and we don't want to model 15 rows per run as a separate
+  // table.
+  sources Json?
+
+  // Fast "most recent run for this user" lookup — primary use case is the
+  // status pill on /jobs/search. startedAt DESC.
+  @@index([userId, startedAt])
 }

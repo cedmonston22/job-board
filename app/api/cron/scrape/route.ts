@@ -19,6 +19,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { runScrapeForUser } from "@/lib/scrapers/runner";
+import { ScrapeTrigger } from "@/lib/generated/prisma/client";
 
 // Bump the default 10s timeout — the scrape can take 30-60s when many
 // adapters return large lists. 60s is the Hobby tier cap; Pro allows 300s.
@@ -56,7 +57,7 @@ export async function GET(request: NextRequest) {
   const results: UserResult[] = [];
   for (const user of users) {
     try {
-      const r = await runScrapeForUser(user.id);
+      const r = await runScrapeForUser(user.id, ScrapeTrigger.CRON);
       results.push({
         userId: user.id,
         ok: true,
