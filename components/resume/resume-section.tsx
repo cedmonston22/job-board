@@ -142,7 +142,7 @@ function ResumeUploaded({ resume }: { resume: Resume }) {
         {!resume.extractedText ? (
           <div className="rounded-md border border-destructive/30 bg-destructive/5 p-4 text-sm">
             <div className="font-medium text-destructive">
-              Couldn't read the file
+              Couldn&apos;t read the file
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
               It may be a scanned image (no text layer), password-protected, or
@@ -154,10 +154,10 @@ function ResumeUploaded({ resume }: { resume: Resume }) {
         ) : (
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-4 text-sm">
             <div className="font-medium text-amber-700 dark:text-amber-400">
-              AI couldn't parse the resume
+              AI couldn&apos;t parse the resume
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
-              The text was extracted but Groq's structured-output call failed.
+              The text was extracted but Groq&apos;s structured-output call failed.
               Try again — the upstream error is usually transient.
             </div>
             <div className="mt-3">

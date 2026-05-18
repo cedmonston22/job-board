@@ -161,12 +161,24 @@ export async function uploadResume(
   // First successful upload also finishes onboarding. updateMany with a
   // `where` guard means we only stamp onboardedAt the first time — repeat
   // uploads after onboarding don't overwrite the original timestamp.
-  await prisma.user.updateMany({
+  const onboardingStamp = await prisma.user.updateMany({
     where: { id: userId, onboardedAt: null },
     data: { onboardedAt: new Date() },
   });
 
   revalidatePath("/profile");
+
+  // If this upload is what completed onboarding (count > 0), the user is on
+  // /onboarding and expects to land on the dashboard. revalidatePath alone
+  // wouldn't move them — /onboarding only redirects on its next server
+  // render, but useActionState's return value doesn't trigger one. Redirect
+  // explicitly. For /profile replaces the user is already onboarded, so
+  // count is 0 and we fall through to the normal `return`.
+  if (onboardingStamp.count > 0) {
+    revalidatePath("/");
+    redirect("/");
+  }
+
   return {
     ok: true,
     extractionError: extraction.ok ? undefined : extraction.error,
