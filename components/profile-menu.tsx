@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useTransition } from "react";
 import { ChevronDownIcon, LogOutIcon, UserIcon } from "lucide-react";
 import { signOutAction } from "@/app/actions/auth";
 import { Avatar } from "@/components/avatar";
@@ -24,6 +26,9 @@ export function ProfileMenu({
     image: string | null;
   };
 }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -79,14 +84,24 @@ export function ProfileMenu({
 
         <DropdownMenuItem
           variant="destructive"
+          disabled={pending}
           onClick={() => {
-            // Server actions are callable from client handlers directly.
-            // No transition needed since we just navigate away after.
-            void signOutAction();
+            // Server action clears the session (cookie + DB row), then we
+            // navigate explicitly. We can't rely on `signOut({ redirectTo })`
+            // here — a NEXT_REDIRECT thrown by the action is only followed
+            // when the call is wrapped in useTransition/useActionState/form
+            // action. Direct calls would swallow it and leave the user on
+            // the page despite being signed out. router.refresh() drops any
+            // cached server-component output that still assumes a session.
+            startTransition(async () => {
+              await signOutAction();
+              router.push("/login");
+              router.refresh();
+            });
           }}
         >
           <LogOutIcon />
-          Sign out
+          {pending ? "Signing out…" : "Sign out"}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
