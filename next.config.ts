@@ -17,6 +17,22 @@ const nextConfig: NextConfig = {
   // so it must be external — Turbopack can't bundle native binaries.
   serverExternalPackages: ["pdf-parse", "pdfjs-dist", "@napi-rs/canvas"],
 
+  // Force @napi-rs/canvas into the Vercel lambda's traced file set.
+  // serverExternalPackages above only tells Next "don't bundle this" — it
+  // does NOT guarantee the package files are copied into the deployed
+  // function. Vercel uses node-file-trace (nft) to decide what node_modules
+  // make it into /var/task/, and nft can't see dynamic `try { require(...) }`
+  // calls. pdfjs-dist loads @napi-rs/canvas exactly this way, so without an
+  // explicit hint canvas gets silently stripped from the lambda — every
+  // server action then crashes with "DOMMatrix is not defined" the moment a
+  // bundle transitively imports pdf-parse. This config copies the canvas
+  // package files into every server route's trace. The '/*' key matches all
+  // routes (per Next 16 docs: outputFileTracingIncludes uses picomatch globs
+  // against the route path).
+  outputFileTracingIncludes: {
+    "/*": ["./node_modules/@napi-rs/canvas/**/*"],
+  },
+
   // Version-skew protection for server actions. Without this, when a user has
   // a stale tab open from an earlier deploy and submits a form, the action ID
   // in their HTML no longer matches anything the new build knows about → 404
