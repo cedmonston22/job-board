@@ -117,6 +117,7 @@ export const scrapeSourceTypeSchema = z.enum([
   "GREENHOUSE",
   "LEVER",
   "ASHBY",
+  "WORKDAY",
   "REMOTEOK",
   "SIMPLIFY_SUMMER",
   "SIMPLIFY_NEWGRAD",
@@ -124,10 +125,10 @@ export const scrapeSourceTypeSchema = z.enum([
 ]);
 export type ScrapeSourceTypeInput = z.infer<typeof scrapeSourceTypeSchema>;
 
-// Which source types require an `identifier` (= the company slug). Global
-// feeds (RemoteOK, Simplify, Ouckah) have one canonical URL each, so we
-// ignore identifier for them.
-const ATS_SOURCE_TYPES = ["GREENHOUSE", "LEVER", "ASHBY"] as const;
+// Which source types require an `identifier` (= the company slug, or
+// "tenant/wdN/site" for Workday). Global feeds (RemoteOK, Simplify, Ouckah)
+// have one canonical URL each, so we ignore identifier for them.
+const ATS_SOURCE_TYPES = ["GREENHOUSE", "LEVER", "ASHBY", "WORKDAY"] as const;
 
 // Validates the "add a source" form. The `.superRefine` enforces: if the
 // type is ATS-based, identifier is required (and lowercased-normalized); if
@@ -160,12 +161,20 @@ export const scrapeSourceInputSchema = z
   })
   .transform((data) => {
     const isAts = (ATS_SOURCE_TYPES as readonly string[]).includes(data.type);
+    if (!isAts) {
+      // Force null for global feeds so the unique constraint behaves.
+      return { ...data, identifier: null };
+    }
+    // Workday's identifier is "tenant/wdN/site" and the `site` segment is
+    // CASE-SENSITIVE in Workday's URL routing (e.g. "External" works,
+    // "external" 404s). Preserve the operator's exact casing for Workday;
+    // lowercase the other ATS slugs (Greenhouse/Lever/Ashby slugs are
+    // case-insensitive in their APIs, so normalization is safe).
+    const rawIdentifier = data.identifier!;
     return {
       ...data,
-      // Force null for global feeds so the unique constraint behaves.
-      // Lowercase ATS slugs for consistency (Greenhouse/Lever/Ashby slugs
-      // are case-insensitive in their APIs).
-      identifier: isAts ? data.identifier!.toLowerCase() : null,
+      identifier:
+        data.type === "WORKDAY" ? rawIdentifier : rawIdentifier.toLowerCase(),
     };
   });
 

@@ -28,6 +28,7 @@ import {
   SIMPLIFY_SUMMER_URL,
 } from "./simplify";
 import type { Adapter, RawJob, RunSummary } from "./types";
+import { workdayAdapter } from "./workday";
 // Prisma's generated enum value — pass-through to `trigger` field of the
 // ScrapeRun row we write at the end of every invocation.
 import { ScrapeTrigger } from "../generated/prisma/client";
@@ -39,13 +40,33 @@ export type RunResult = {
   sources: RunSummary[];
 };
 
-// Adapter map. All seven source types are wired as of Phase 3.4. The map
-// stays Partial so a future enum addition (e.g. Workday) doesn't crash —
+// Result of a single source's upstream fetch — either the raw rows OR the
+// error message the adapter threw / never-implemented placeholder. Stored
+// in a Map keyed by `sourceKey(source)` so per-user passes can read from
+// the cache instead of re-hitting the network for every user.
+export type PrefetchedSource = {
+  raw: RawJob[];
+  error: string | null;
+};
+
+export type PrefetchedSources = Map<string, PrefetchedSource>;
+
+// Stable cache key for a DEFAULT_SOURCES row. `identifier` is null for
+// global feeds (RemoteOK / Simplify / Ouckah) — we coerce to empty string
+// so the key is still deterministic. Exported in case future callers want
+// to populate the map themselves.
+export function sourceKey(source: DefaultSource): string {
+  return `${source.type}:${source.identifier ?? ""}`;
+}
+
+// Adapter map. All eight source types are wired as of Phase 3.5 (Workday
+// added). The map stays Partial so a future enum addition doesn't crash —
 // missing entries surface as "adapter not implemented" in the summary.
 const ADAPTERS: Partial<Record<ScrapeSourceTypeInput, Adapter>> = {
   GREENHOUSE: greenhouseAdapter,
   LEVER: leverAdapter,
   ASHBY: ashbyAdapter,
+  WORKDAY: workdayAdapter,
   REMOTEOK: remoteOkAdapter,
   SIMPLIFY_SUMMER: makeSimplifyAdapter(SIMPLIFY_SUMMER_URL),
   SIMPLIFY_NEWGRAD: makeSimplifyAdapter(SIMPLIFY_NEWGRAD_URL),
@@ -61,6 +82,13 @@ export async function runScrapeForUser(
   // "last manual 2 min ago" — the difference matters when diagnosing
   // whether the SCHEDULED scrape is firing.
   trigger: ScrapeTrigger = ScrapeTrigger.MANUAL,
+  // Optional map of pre-fetched raw rows keyed by `sourceKey(source)`.
+  // The cron route populates this once via `fetchAllRawJobs()` and reuses
+  // it across every user so each upstream source is hit exactly ONCE per
+  // cron run regardless of user count. When undefined (e.g. the manual
+  // /api/scrape/run endpoint), each per-source pass falls back to calling
+  // the adapter directly — original single-user behavior is preserved.
+  prefetched?: PrefetchedSources,
 ): Promise<RunResult> {
   // Create the audit row up-front in `ok: false` state. Whichever branch
   // we exit through (success / per-source failures / unexpected throw)
@@ -87,8 +115,12 @@ export async function runScrapeForUser(
 
     // Promise.allSettled because we want ALL sources to attempt regardless of
     // any single failure — a 500 from Lever shouldn't block Greenhouse results.
+    // When `prefetched` is supplied, runOneSource skips its own fetch and
+    // reuses the cached raw rows; otherwise it calls the adapter itself.
     const settled = await Promise.allSettled(
-      DEFAULT_SOURCES.map((source) => runOneSource(userId, source, filter)),
+      DEFAULT_SOURCES.map((source) =>
+        runOneSource(userId, source, filter, prefetched),
+      ),
     );
 
     // `runOneSource` always resolves with a RunSummary (it catches its own
@@ -175,23 +207,46 @@ async function runOneSource(
   userId: string,
   source: DefaultSource,
   filter: Awaited<ReturnType<typeof prisma.scrapeFilter.findUnique>>,
+  prefetched?: PrefetchedSources,
 ): Promise<RunSummary> {
   const summary = blankSummary(source, null);
-  const adapter = ADAPTERS[source.type];
-
-  // Unimplemented adapter — not an error, just nothing to do.
-  if (!adapter) {
-    summary.errored = "adapter not implemented yet";
-    return summary;
-  }
 
   let raw: RawJob[];
-  try {
-    raw = await adapter(source.identifier, { defaultCompany: source.label });
-  } catch (err) {
-    summary.errored = (err as Error).message;
-    return summary;
+
+  if (prefetched) {
+    // Cron path: the upstream fetch already happened once for this whole
+    // run. Read the cached result (raw rows or error) instead of re-hitting
+    // the network. A missing entry is treated as an "internal" miss — that
+    // shouldn't happen because `fetchAllRawJobs()` populates every source,
+    // but the defensive branch keeps a typo from silently zeroing a source.
+    const cached = prefetched.get(sourceKey(source));
+    if (!cached) {
+      summary.errored = "no prefetched entry for source";
+      return summary;
+    }
+    if (cached.error !== null) {
+      summary.errored = cached.error;
+      return summary;
+    }
+    raw = cached.raw;
+  } else {
+    // Manual path: no shared cache — fetch this source ourselves.
+    const adapter = ADAPTERS[source.type];
+
+    // Unimplemented adapter — not an error, just nothing to do.
+    if (!adapter) {
+      summary.errored = "adapter not implemented yet";
+      return summary;
+    }
+
+    try {
+      raw = await adapter(source.identifier, { defaultCompany: source.label });
+    } catch (err) {
+      summary.errored = (err as Error).message;
+      return summary;
+    }
   }
+
   summary.fetched = raw.length;
 
   const kept = applyFilter(raw, filter);
@@ -283,4 +338,54 @@ function blankSummary(
     updated: 0,
     errored,
   };
+}
+
+// Fetch every DEFAULT_SOURCES adapter exactly once and return the raw rows
+// keyed by `sourceKey(source)`. The cron route calls this ONCE per
+// invocation, then hands the resulting map to each `runScrapeForUser` call
+// so per-user passes only run prune + filter + upsert (cheap, DB-bound) and
+// never re-hit the upstream APIs.
+//
+// Behavior parity with the per-user fetch in `runOneSource`:
+//   - Promise.allSettled so one bad source doesn't block the others
+//   - missing adapter → error entry "adapter not implemented yet"
+//   - adapter throws → error entry with the thrown message
+//   - unexpected rejection (shouldn't happen — the per-source closure catches
+//     its own throws) → error entry "unexpected error: ..."
+// Errors are carried in the same map entry as `{ raw: [], error: msg }`, so
+// downstream per-user runs surface them in `RunSummary.errored` exactly the
+// way they would if the user-loop had fetched directly.
+export async function fetchAllRawJobs(): Promise<PrefetchedSources> {
+  const settled = await Promise.allSettled(
+    DEFAULT_SOURCES.map(async (source): Promise<PrefetchedSource> => {
+      const adapter = ADAPTERS[source.type];
+      if (!adapter) {
+        return { raw: [], error: "adapter not implemented yet" };
+      }
+      try {
+        const raw = await adapter(source.identifier, {
+          defaultCompany: source.label,
+        });
+        return { raw, error: null };
+      } catch (err) {
+        return { raw: [], error: (err as Error).message };
+      }
+    }),
+  );
+
+  const out: PrefetchedSources = new Map();
+  settled.forEach((s, i) => {
+    const source = DEFAULT_SOURCES[i];
+    if (s.status === "fulfilled") {
+      out.set(sourceKey(source), s.value);
+    } else {
+      // Inner closure catches everything; reaching this branch means a
+      // truly unexpected bug. Surface it just like the per-user path does.
+      out.set(sourceKey(source), {
+        raw: [],
+        error: `unexpected error: ${String(s.reason)}`,
+      });
+    }
+  });
+  return out;
 }

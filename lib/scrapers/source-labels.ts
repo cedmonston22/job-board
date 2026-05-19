@@ -9,6 +9,7 @@ export const SOURCE_TYPE_LABELS: Record<ScrapeSourceTypeInput, string> = {
   GREENHOUSE: "Greenhouse",
   LEVER: "Lever",
   ASHBY: "Ashby",
+  WORKDAY: "Workday",
   REMOTEOK: "RemoteOK",
   SIMPLIFY_SUMMER: "Simplify · Summer",
   SIMPLIFY_NEWGRAD: "Simplify · New Grad",

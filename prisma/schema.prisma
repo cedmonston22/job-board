@@ -194,6 +194,7 @@ enum ScrapeSourceType {
   GREENHOUSE        // boards-api.greenhouse.io/v1/boards/{slug}/jobs
   LEVER             // api.lever.co/v0/postings/{slug}
   ASHBY             // api.ashbyhq.com/posting-api/job-board/{slug}
+  WORKDAY           // {tenant}.wd{N}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs
   REMOTEOK          // remoteok.com/api (global firehose; identifier ignored)
   SIMPLIFY_SUMMER   // github.com/SimplifyJobs/Summer2026-Internships README.md
   SIMPLIFY_NEWGRAD  // github.com/SimplifyJobs/New-Grad-Positions README.md

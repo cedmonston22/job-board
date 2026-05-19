@@ -18,7 +18,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { runScrapeForUser } from "@/lib/scrapers/runner";
+import { fetchAllRawJobs, runScrapeForUser } from "@/lib/scrapers/runner";
 import { ScrapeTrigger } from "@/lib/generated/prisma/client";
 
 // Bump the default 10s timeout — the scrape can take 30-60s when many
@@ -50,6 +50,14 @@ export async function GET(request: NextRequest) {
   // scales to multi-user later without changes.
   const users = await prisma.user.findMany({ select: { id: true } });
 
+  // Hit every upstream source ONCE for this whole cron run. Previously the
+  // adapters re-fetched inside every per-user loop; with N users that meant
+  // N × ~12 HTTP calls per day for identical results. The prefetched map is
+  // keyed by `sourceKey(source)` and consumed by each `runScrapeForUser`
+  // call below — per-user behaviour (prune + filter + upsert + audit row)
+  // is otherwise unchanged.
+  const prefetched = await fetchAllRawJobs();
+
   // Run sequentially per user. Each user's scrape is internally parallel
   // (Promise.allSettled across sources), so the bottleneck stays bounded
   // per user. Running users in parallel could overwhelm Groq quotas or
@@ -57,7 +65,11 @@ export async function GET(request: NextRequest) {
   const results: UserResult[] = [];
   for (const user of users) {
     try {
-      const r = await runScrapeForUser(user.id, ScrapeTrigger.CRON);
+      const r = await runScrapeForUser(
+        user.id,
+        ScrapeTrigger.CRON,
+        prefetched,
+      );
       results.push({
         userId: user.id,
         ok: true,
